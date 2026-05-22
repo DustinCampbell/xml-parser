@@ -13,11 +13,8 @@ internal static class XmlMetadataParser
         public int ChildCount;    // Running count of direct children
     }
 
-    public static XmlDocument Parse(ReadOnlySpan<byte> utf8Xml)
+    public static XmlDocument Parse(byte[] sourceBytes)
     {
-        // We need to retain the source bytes since the metadata stores offsets into them
-        byte[] sourceBytes = utf8Xml.ToArray();
-
         var reader = new Utf8XmlReader(
             sourceBytes,
             new XmlReaderOptions
@@ -28,7 +25,7 @@ internal static class XmlMetadataParser
 
         try
         {
-            var db = new MetadataDb(Math.Max(64, utf8Xml.Length / 20)); // rough estimate: 1 node per 20 bytes
+            var db = new MetadataDb(Math.Max(64, sourceBytes.Length / 20)); // rough estimate: 1 node per 20 bytes
             var frameStack = new ElementFrame[16];
             int frameCount = 0;
             int rootIndex = -1;
@@ -182,8 +179,8 @@ internal static class XmlMetadataParser
                 throw new FormatException("The XML payload did not contain a document element.");
             }
 
-            db.TrimExcess();
-            return new XmlDocument(sourceBytes, db, rootIndex, declarationIndex);
+            var compactDb = db.Compact();
+            return new XmlDocument(sourceBytes, compactDb, rootIndex, declarationIndex);
         }
         finally
         {

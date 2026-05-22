@@ -39,7 +39,7 @@ public readonly struct XmlElement
         get
         {
             ref readonly DbRow row = ref _document.GetRow(_index);
-            return _document.GetString(row.NameStart, row.NameLength);
+            return _document.GetName(row.NameStart, row.NameLength);
         }
     }
 
@@ -52,7 +52,7 @@ public readonly struct XmlElement
         {
             ref readonly DbRow row = ref _document.GetRow(_index);
             if (row.PrefixLength == 0) return string.Empty;
-            return _document.GetString(row.NameStart - row.PrefixLength - 1, row.PrefixLength);
+            return _document.GetName(row.NameStart - row.PrefixLength - 1, row.PrefixLength);
         }
     }
 
@@ -65,7 +65,7 @@ public readonly struct XmlElement
         {
             ref readonly DbRow row = ref _document.GetRow(_index);
             if (row.NsUriLength == 0) return string.Empty;
-            return _document.GetString(row.NsUriStart, row.NsUriLength);
+            return _document.GetName(row.NsUriStart, row.NsUriLength);
         }
     }
 

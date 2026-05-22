@@ -28,6 +28,7 @@ public sealed class XmlDocument : IDisposable
     private readonly MetadataDb _db;
     private readonly int _rootIndex;
     private readonly int _declarationIndex; // -1 if no declaration
+    private Utf8StringCache? _nameCache; // lazily created for name deduplication
     private bool _disposed;
 
     internal XmlDocument(byte[] utf8Source, MetadataDb db, int rootIndex, int declarationIndex)
@@ -70,7 +71,8 @@ public sealed class XmlDocument : IDisposable
     public static XmlDocument Parse(string xml)
     {
         ThrowHelper.ThrowIfNull(xml);
-        return Parse(Encoding.UTF8.GetBytes(xml));
+        byte[] utf8Bytes = Encoding.UTF8.GetBytes(xml);
+        return XmlMetadataParser.Parse(utf8Bytes);
     }
 
     /// <summary>
@@ -79,7 +81,7 @@ public sealed class XmlDocument : IDisposable
     public static XmlDocument Parse(byte[] utf8Xml)
     {
         ThrowHelper.ThrowIfNull(utf8Xml);
-        return Parse((ReadOnlySpan<byte>)utf8Xml);
+        return XmlMetadataParser.Parse(utf8Xml);
     }
 
     /// <summary>
@@ -87,7 +89,7 @@ public sealed class XmlDocument : IDisposable
     /// </summary>
     public static XmlDocument Parse(ReadOnlySpan<byte> utf8Xml)
     {
-        return XmlMetadataParser.Parse(utf8Xml);
+        return XmlMetadataParser.Parse(utf8Xml.ToArray());
     }
 
     /// <summary>
@@ -184,7 +186,20 @@ public sealed class XmlDocument : IDisposable
     internal ref readonly DbRow GetRow(int index) => ref _db.GetRow(index);
 
     /// <summary>
-    /// Decodes UTF-8 bytes from the source at the given offset/length.
+    /// Decodes a name from UTF-8 source with deduplication via the string cache.
+    /// Names repeat frequently in XML (element names, attribute names, prefixes, namespace URIs).
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal string GetName(int start, int length)
+    {
+        if (length == 0) return string.Empty;
+        var cache = _nameCache ??= new Utf8StringCache(32);
+        return cache.GetOrAdd(_utf8Source.AsSpan(start, length));
+    }
+
+    /// <summary>
+    /// Decodes UTF-8 bytes from the source at the given offset/length (no caching).
+    /// Used for values that are unlikely to repeat.
     /// </summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     internal string GetString(int start, int length)
@@ -284,9 +299,9 @@ public sealed class XmlDocument : IDisposable
     private void WriteElementTo(Utf8XmlWriter writer, int elementIdx)
     {
         ref readonly DbRow row = ref _db.GetRow(elementIdx);
-        string localName = GetString(row.NameStart, row.NameLength);
-        string prefix = row.PrefixLength > 0 ? GetString(row.NameStart - row.PrefixLength - 1, row.PrefixLength) : string.Empty;
-        string nsUri = row.NsUriLength > 0 ? GetString(row.NsUriStart, row.NsUriLength) : string.Empty;
+        string localName = GetName(row.NameStart, row.NameLength);
+        string prefix = row.PrefixLength > 0 ? GetName(row.NameStart - row.PrefixLength - 1, row.PrefixLength) : string.Empty;
+        string nsUri = row.NsUriLength > 0 ? GetName(row.NsUriStart, row.NsUriLength) : string.Empty;
 
         writer.WriteStartElement(localName, nsUri, prefix);
 
@@ -296,9 +311,9 @@ public sealed class XmlDocument : IDisposable
         {
             int attrIdx = attrStart + i;
             ref readonly DbRow attrRow = ref _db.GetRow(attrIdx);
-            string attrLocalName = GetString(attrRow.NameStart, attrRow.NameLength);
-            string attrPrefix = attrRow.PrefixLength > 0 ? GetString(attrRow.NameStart - attrRow.PrefixLength - 1, attrRow.PrefixLength) : string.Empty;
-            string attrNsUri = attrRow.NsUriLength > 0 ? GetString(attrRow.NsUriStart, attrRow.NsUriLength) : string.Empty;
+            string attrLocalName = GetName(attrRow.NameStart, attrRow.NameLength);
+            string attrPrefix = attrRow.PrefixLength > 0 ? GetName(attrRow.NameStart - attrRow.PrefixLength - 1, attrRow.PrefixLength) : string.Empty;
+            string attrNsUri = attrRow.NsUriLength > 0 ? GetName(attrRow.NsUriStart, attrRow.NsUriLength) : string.Empty;
             string attrValue = GetDecodedValue(attrRow.ValueStart, attrRow.ValueLength);
             writer.WriteAttributeString(attrLocalName, attrValue, attrNsUri, attrPrefix);
         }
@@ -330,7 +345,7 @@ public sealed class XmlDocument : IDisposable
                     break;
                 case XmlNodeType.ProcessingInstruction:
                     writer.WriteProcessingInstruction(
-                        GetString(child.NameStart, child.NameLength),
+                        GetName(child.NameStart, child.NameLength),
                         GetString(child.ValueStart, child.ValueLength));
                     i2++;
                     break;
@@ -360,8 +375,8 @@ public sealed class XmlDocument : IDisposable
     private void WriteElementToText(TextWriter writer, int elementIdx)
     {
         ref readonly DbRow row = ref _db.GetRow(elementIdx);
-        string localName = GetString(row.NameStart, row.NameLength);
-        string prefix = row.PrefixLength > 0 ? GetString(row.NameStart - row.PrefixLength - 1, row.PrefixLength) : string.Empty;
+        string localName = GetName(row.NameStart, row.NameLength);
+        string prefix = row.PrefixLength > 0 ? GetName(row.NameStart - row.PrefixLength - 1, row.PrefixLength) : string.Empty;
 
         writer.Write('<');
         WriteQualifiedName(writer, prefix, localName);
@@ -372,14 +387,13 @@ public sealed class XmlDocument : IDisposable
         {
             int attrIdx = attrStart + i;
             ref readonly DbRow attrRow = ref _db.GetRow(attrIdx);
-            string attrLocalName = GetString(attrRow.NameStart, attrRow.NameLength);
-            string attrPrefix = attrRow.PrefixLength > 0 ? GetString(attrRow.NameStart - attrRow.PrefixLength - 1, attrRow.PrefixLength) : string.Empty;
-            string attrValue = GetDecodedValue(attrRow.ValueStart, attrRow.ValueLength);
+            string attrLocalName = GetName(attrRow.NameStart, attrRow.NameLength);
+            string attrPrefix = attrRow.PrefixLength > 0 ? GetName(attrRow.NameStart - attrRow.PrefixLength - 1, attrRow.PrefixLength) : string.Empty;
 
             writer.Write(' ');
             WriteQualifiedName(writer, attrPrefix, attrLocalName);
             writer.Write("=\"");
-            writer.Write(EscapeAttributeValue(attrValue));
+            WriteRawValue(writer, attrRow.ValueStart, attrRow.ValueLength);
             writer.Write('"');
         }
 
@@ -405,12 +419,12 @@ public sealed class XmlDocument : IDisposable
                     i2 = child.EndIndex;
                     break;
                 case XmlNodeType.Text:
-                    writer.Write(EscapeText(GetDecodedValue(child.ValueStart, child.ValueLength)));
+                    WriteTextValue(writer, child.ValueStart, child.ValueLength);
                     i2++;
                     break;
                 case XmlNodeType.CData:
                     writer.Write("<![CDATA[");
-                    writer.Write(GetDecodedValue(child.ValueStart, child.ValueLength));
+                    WriteRawValue(writer, child.ValueStart, child.ValueLength);
                     writer.Write("]]>");
                     i2++;
                     break;
@@ -422,7 +436,7 @@ public sealed class XmlDocument : IDisposable
                     break;
                 case XmlNodeType.ProcessingInstruction:
                     writer.Write("<?");
-                    writer.Write(GetString(child.NameStart, child.NameLength));
+                    writer.Write(GetName(child.NameStart, child.NameLength));
                     if (child.ValueLength > 0)
                     {
                         writer.Write(' ');
@@ -450,6 +464,41 @@ public sealed class XmlDocument : IDisposable
             writer.Write(':');
         }
         writer.Write(localName);
+    }
+
+    /// <summary>
+    /// Writes raw UTF-8 source bytes directly to the TextWriter.
+    /// The source already contains properly escaped XML (entities preserved as-is).
+    /// </summary>
+    private void WriteRawValue(TextWriter writer, int start, int length)
+    {
+        if (length == 0) return;
+#if NET
+        Span<char> stackBuf = stackalloc char[256];
+        var span = _utf8Source.AsSpan(start, length);
+        // For short values, use stack buffer
+        if (length <= 256)
+        {
+            int charCount = s_utf8.GetChars(span, stackBuf);
+            writer.Write(stackBuf[..charCount]);
+        }
+        else
+        {
+            writer.Write(s_utf8.GetString(span));
+        }
+#else
+        writer.Write(s_utf8.GetString(_utf8Source, start, length));
+#endif
+    }
+
+    /// <summary>
+    /// Writes text node value directly from source (already XML-escaped in the source).
+    /// </summary>
+    private void WriteTextValue(TextWriter writer, int start, int length)
+    {
+        // Text node values in the parsed source are already entity-escaped
+        // (e.g., &amp; &lt; &gt;) so we can write them verbatim.
+        WriteRawValue(writer, start, length);
     }
 
     private static string EscapeText(string value) => value

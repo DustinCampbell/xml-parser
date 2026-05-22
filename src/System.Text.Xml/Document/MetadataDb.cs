@@ -10,27 +10,23 @@ namespace System.Text.Xml;
 /// </summary>
 internal sealed class MetadataDb
 {
-    // Fields packed into DbRow for minimal memory:
-    // - NodeType (byte)
-    // - Flags (byte): HasChildren, HasAttributes, IsEmpty flags
-    // - NameStart (int): offset into UTF-8 source for local name
-    // - NameLength (ushort): length of local name
-    // - PrefixLength (ushort): length of prefix (prefix immediately precedes ":" + localName)
-    // - ValueStart (int): offset into UTF-8 source for value/text
-    // - ValueLength (int): length of value
-    // - NsUriStart (int): offset into UTF-8 source for namespace URI
-    // - NsUriLength (ushort): length of namespace URI
-    // - AttributeCount (ushort): number of attributes (elements only)
-    // - ChildCount (int): number of direct child nodes (elements only)
-    // - EndIndex (int): index of the row just past this element's subtree (for skipping)
-
     private DbRow[] _rows;
     private int _count;
 
     public MetadataDb(int initialCapacity)
     {
-        _rows = new DbRow[initialCapacity];
+        _rows = ArrayPool<DbRow>.Shared.Rent(initialCapacity);
         _count = 0;
+    }
+
+    /// <summary>
+    /// Creates a MetadataDb that directly owns the given array (no pooling).
+    /// Used after compacting.
+    /// </summary>
+    private MetadataDb(DbRow[] ownedRows, int count)
+    {
+        _rows = ownedRows;
+        _count = count;
     }
 
     public int Count => _count;
@@ -44,7 +40,7 @@ internal sealed class MetadataDb
     {
         if (_count == _rows.Length)
         {
-            Array.Resize(ref _rows, _rows.Length * 2);
+            Grow();
         }
 
         int index = _count++;
@@ -52,15 +48,26 @@ internal sealed class MetadataDb
         return index;
     }
 
-    /// <summary>
-    /// Trims the internal array to exact size to minimize retained memory.
-    /// </summary>
-    public void TrimExcess()
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private void Grow()
     {
-        if (_count < _rows.Length)
-        {
-            Array.Resize(ref _rows, _count);
-        }
+        var newArray = ArrayPool<DbRow>.Shared.Rent(_rows.Length * 2);
+        Array.Copy(_rows, newArray, _count);
+        ArrayPool<DbRow>.Shared.Return(_rows, clearArray: false);
+        _rows = newArray;
+    }
+
+    /// <summary>
+    /// Compacts the metadata into a new owned array and returns the pooled buffer.
+    /// Returns a new MetadataDb that owns its memory (not pooled).
+    /// </summary>
+    public MetadataDb Compact()
+    {
+        var finalArray = new DbRow[_count];
+        Array.Copy(_rows, finalArray, _count);
+        ArrayPool<DbRow>.Shared.Return(_rows, clearArray: false);
+        _rows = null!;
+        return new MetadataDb(finalArray, _count);
     }
 }
 
