@@ -1,0 +1,11 @@
+<Solution>
+  <Folder Name="/benchmarks/">
+    <Project Path="benchmarks/System.Text.Xml.Benchmarks/System.Text.Xml.Benchmarks.csproj" />
+  </Folder>
+  <Folder Name="/src/">
+    <Project Path="src/System.Text.Xml/System.Text.Xml.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/System.Text.Xml.Tests/System.Text.Xml.Tests.csproj" />
+  </Folder>
+</Solution>
