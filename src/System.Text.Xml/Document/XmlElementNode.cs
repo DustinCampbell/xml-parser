@@ -52,8 +52,31 @@ public sealed class XmlElementNode : XmlNode
     }
 
     internal XmlElementNode(string localName, string? prefix, string? namespaceUri, IEnumerable<XmlAttributeNode>? attributes = null, IEnumerable<XmlNode>? children = null)
-        : this(XmlNameAccessor.Create(localName, prefix, namespaceUri), attributes, children)
+        : base(XmlNodeType.Element)
     {
+        _name = new XmlName(localName, prefix ?? string.Empty, namespaceUri ?? string.Empty);
+        LocalName = localName;
+        Prefix = prefix ?? string.Empty;
+        NamespaceUri = namespaceUri ?? string.Empty;
+        _attributes = new List<XmlAttributeNode>();
+        _children = new List<XmlNode>();
+
+        if (attributes is not null)
+        {
+            foreach (var attribute in attributes)
+            {
+                attribute.SetParent(this);
+                _attributes.Add(attribute);
+            }
+        }
+
+        if (children is not null)
+        {
+            foreach (var child in children)
+            {
+                AddChild(child);
+            }
+        }
     }
 
     /// <summary>

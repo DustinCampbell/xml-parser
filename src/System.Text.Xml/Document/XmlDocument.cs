@@ -234,6 +234,7 @@ public sealed class XmlDocument : IDisposable
             var elementStack = new Stack<XmlElementNode>(16);
             XmlDeclarationNode? declaration = null;
             XmlElementNode? root = null;
+            bool skipNextEndElement = false;
 
             while (reader.Read())
             {
@@ -265,12 +266,20 @@ public sealed class XmlDocument : IDisposable
                         {
                             elementStack.Push(element);
                         }
+                        else
+                        {
+                            skipNextEndElement = true;
+                        }
 
                         break;
                     }
 
                     case XmlTokenType.EndElement:
-                        if (elementStack.Count > 0 && IsMatchingElement(reader, elementStack.Peek()))
+                        if (skipNextEndElement)
+                        {
+                            skipNextEndElement = false;
+                        }
+                        else if (elementStack.Count > 0)
                         {
                             elementStack.Pop();
                         }
@@ -390,11 +399,5 @@ public sealed class XmlDocument : IDisposable
             elementStack.Peek().AddChild(child);
         }
 
-        private static bool IsMatchingElement(Utf8XmlReader reader, XmlElementNode element)
-        {
-            return string.Equals(element.LocalName, reader.GetLocalName(), StringComparison.Ordinal)
-                && string.Equals(element.Prefix, reader.GetPrefix(), StringComparison.Ordinal)
-                && string.Equals(element.NamespaceUri, reader.GetNamespaceUri(), StringComparison.Ordinal);
-        }
     }
 }
