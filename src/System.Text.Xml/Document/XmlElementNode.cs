@@ -1,6 +1,7 @@
 using System;
+using System.Collections;
 using System.Collections.Generic;
-using System.Linq;
+using System.Runtime.InteropServices;
 using System.Text;
 
 namespace System.Text.Xml;
@@ -13,9 +14,11 @@ namespace System.Text.Xml;
 /// </remarks>
 public sealed class XmlElementNode : XmlNode
 {
-    private readonly List<XmlAttributeNode> _attributes;
-    private readonly List<XmlNode> _children;
-    private readonly XmlName _name;
+    private XmlAttributeNode[]? _attributes;
+    private int _attributeCount;
+    private XmlNode[]? _children;
+    private int _childCount;
+    private string? _directText; // Fast path: stores text content directly without child array
 
     /// <summary>
     /// Initializes a new <see cref="XmlElementNode"/> instance.
@@ -26,13 +29,10 @@ public sealed class XmlElementNode : XmlNode
     public XmlElementNode(XmlName name, IEnumerable<XmlAttributeNode>? attributes = null, IEnumerable<XmlNode>? children = null)
         : base(XmlNodeType.Element)
     {
-        _name = name;
         XmlNameAccessor.GetParts(name, out var localName, out var prefix, out var namespaceUri);
         LocalName = localName;
         Prefix = prefix;
         NamespaceUri = namespaceUri;
-        _attributes = new List<XmlAttributeNode>();
-        _children = new List<XmlNode>();
 
         if (attributes is not null)
         {
@@ -51,22 +51,20 @@ public sealed class XmlElementNode : XmlNode
         }
     }
 
-    internal XmlElementNode(string localName, string? prefix, string? namespaceUri, IEnumerable<XmlAttributeNode>? attributes = null, IEnumerable<XmlNode>? children = null)
+    internal XmlElementNode(string localName, string? prefix, string? namespaceUri, XmlAttributeNode[]? attributes = null, IEnumerable<XmlNode>? children = null)
         : base(XmlNodeType.Element)
     {
-        _name = new XmlName(localName, prefix ?? string.Empty, namespaceUri ?? string.Empty);
         LocalName = localName;
         Prefix = prefix ?? string.Empty;
         NamespaceUri = namespaceUri ?? string.Empty;
-        _attributes = new List<XmlAttributeNode>();
-        _children = new List<XmlNode>();
 
         if (attributes is not null)
         {
-            foreach (var attribute in attributes)
+            _attributes = attributes;
+            _attributeCount = attributes.Length;
+            for (int i = 0; i < _attributeCount; i++)
             {
-                attribute.SetParent(this);
-                _attributes.Add(attribute);
+                attributes[i].SetParent(this);
             }
         }
 
@@ -76,6 +74,19 @@ public sealed class XmlElementNode : XmlNode
             {
                 AddChild(child);
             }
+        }
+    }
+
+    /// <summary>
+    /// Sets the children array directly from the parser (exact-sized, no copies).
+    /// </summary>
+    internal void SetChildrenInternal(XmlNode[] children, int count)
+    {
+        _children = children;
+        _childCount = count;
+        for (int i = 0; i < count; i++)
+        {
+            children[i].SetParent(this);
         }
     }
 
@@ -97,17 +108,33 @@ public sealed class XmlElementNode : XmlNode
     /// <summary>
     /// Gets the qualified element name.
     /// </summary>
-    public XmlName Name => _name;
+    public XmlName Name => new XmlName(LocalName, Prefix, NamespaceUri);
 
     /// <summary>
     /// Gets the attributes declared on the element.
     /// </summary>
-    public IReadOnlyList<XmlAttributeNode> Attributes => _attributes;
+    public IReadOnlyList<XmlAttributeNode> Attributes => new ArraySlice<XmlAttributeNode>(_attributes, _attributeCount);
 
     /// <summary>
     /// Gets the child nodes contained by the element.
     /// </summary>
-    public IReadOnlyList<XmlNode> Children => _children;
+    public IReadOnlyList<XmlNode> Children
+    {
+        get
+        {
+            if (_directText is not null && _childCount == 0)
+            {
+                // Materialize the text node on first access
+                EnsureChildCapacity(1);
+                _children![0] = new XmlTextNode(_directText);
+                _children[0].SetParent(this);
+                _childCount = 1;
+                _directText = null;
+            }
+
+            return new ArraySlice<XmlNode>(_children, _childCount);
+        }
+    }
 
     /// <summary>
     /// Gets the concatenated text content of the element and all descendant text-bearing nodes.
@@ -116,6 +143,11 @@ public sealed class XmlElementNode : XmlNode
     {
         get
         {
+            if (_directText is not null && _childCount == 0)
+            {
+                return _directText;
+            }
+
             var builder = new StringBuilder();
             AppendInnerText(this, builder);
             return builder.ToString();
@@ -130,16 +162,30 @@ public sealed class XmlElementNode : XmlNode
     /// <returns>The matching attribute, or <see langword="null"/> if none is found.</returns>
     public XmlAttributeNode? GetAttribute(string localName, string? ns = null)
     {
-        ArgumentException.ThrowIfNullOrEmpty(localName);
-        return _attributes.FirstOrDefault(attribute =>
-            string.Equals(attribute.LocalName, localName, StringComparison.Ordinal) &&
-            string.Equals(attribute.NamespaceUri, ns ?? string.Empty, StringComparison.Ordinal));
+        ThrowHelper.ThrowIfNullOrEmpty(localName);
+
+        int index = FindAttributeIndex(localName, ns ?? string.Empty);
+        return index >= 0 ? _attributes![index] : null;
     }
 
     /// <summary>
     /// Returns the child elements of the current element.
     /// </summary>
-    public IEnumerable<XmlElementNode> Elements() => _children.OfType<XmlElementNode>();
+    public IEnumerable<XmlElementNode> Elements()
+    {
+        if (_children is null)
+        {
+            yield break;
+        }
+
+        for (int i = 0; i < _childCount; i++)
+        {
+            if (_children[i] is XmlElementNode element)
+            {
+                yield return element;
+            }
+        }
+    }
 
     /// <summary>
     /// Returns the child elements whose local name matches <paramref name="localName"/>.
@@ -147,8 +193,20 @@ public sealed class XmlElementNode : XmlNode
     /// <param name="localName">The local name to match.</param>
     public IEnumerable<XmlElementNode> Elements(string localName)
     {
-        ArgumentException.ThrowIfNullOrEmpty(localName);
-        return Elements().Where(element => string.Equals(element.LocalName, localName, StringComparison.Ordinal));
+        ThrowHelper.ThrowIfNullOrEmpty(localName);
+
+        if (_children is null)
+        {
+            yield break;
+        }
+
+        for (int i = 0; i < _childCount; i++)
+        {
+            if (_children[i] is XmlElementNode element && string.Equals(element.LocalName, localName, StringComparison.Ordinal))
+            {
+                yield return element;
+            }
+        }
     }
 
     /// <summary>
@@ -156,8 +214,18 @@ public sealed class XmlElementNode : XmlNode
     /// </summary>
     public IEnumerable<XmlElementNode> Descendants()
     {
-        foreach (var child in _children.OfType<XmlElementNode>())
+        if (_children is null)
         {
+            yield break;
+        }
+
+        for (int i = 0; i < _childCount; i++)
+        {
+            if (_children[i] is not XmlElementNode child)
+            {
+                continue;
+            }
+
             yield return child;
 
             foreach (var descendant in child.Descendants())
@@ -173,7 +241,7 @@ public sealed class XmlElementNode : XmlNode
     /// <param name="child">The child node to add.</param>
     public void AddChild(XmlNode child)
     {
-        ArgumentNullException.ThrowIfNull(child);
+        ThrowHelper.ThrowIfNull(child);
 
         if (child.NodeType == XmlNodeType.Attribute)
         {
@@ -185,8 +253,63 @@ public sealed class XmlElementNode : XmlNode
             throw new InvalidOperationException("The node already belongs to a different element.");
         }
 
+        EnsureChildCapacity(_childCount + 1);
         child.SetParent(this);
-        _children.Add(child);
+        _children![_childCount++] = child;
+    }
+
+    /// <summary>
+    /// Fast internal add for DOM parsing - skips validation.
+    /// </summary>
+    internal void AddChildInternal(XmlNode child)
+    {
+        if (_directText is not null)
+        {
+            // Materialize the direct text as a child node first
+            EnsureChildCapacity(2);
+            var textNode = new XmlTextNode(_directText);
+            textNode.SetParent(this);
+            _children![0] = textNode;
+            _childCount = 1;
+            _directText = null;
+        }
+        else
+        {
+            EnsureChildCapacity(_childCount + 1);
+        }
+
+        child.SetParent(this);
+        _children![_childCount++] = child;
+    }
+
+    /// <summary>
+    /// Sets direct text content without creating a child node (internal fast path for parsing).
+    /// </summary>
+    internal void SetDirectText(string text)
+    {
+        if (_childCount > 0 || _directText is not null)
+        {
+            // Fall back to normal child addition
+            AddChildInternal(new XmlTextNode(text));
+            return;
+        }
+
+        _directText = text;
+    }
+
+    /// <summary>
+    /// Returns true if the element has direct text set (used during parsing).
+    /// </summary>
+    internal bool HasDirectText => _directText is not null && _childCount == 0;
+
+    /// <summary>
+    /// Consumes and returns the direct text, clearing it from the element.
+    /// </summary>
+    internal string? ConsumeDirectText()
+    {
+        var text = _directText;
+        _directText = null;
+        return text;
     }
 
     /// <summary>
@@ -196,10 +319,27 @@ public sealed class XmlElementNode : XmlNode
     /// <returns><see langword="true"/> if the node was removed; otherwise, <see langword="false"/>.</returns>
     public bool RemoveChild(XmlNode child)
     {
-        ArgumentNullException.ThrowIfNull(child);
+        ThrowHelper.ThrowIfNull(child);
 
-        if (_children.Remove(child))
+        if (_children is null)
         {
+            return false;
+        }
+
+        for (int i = 0; i < _childCount; i++)
+        {
+            if (!ReferenceEquals(_children[i], child))
+            {
+                continue;
+            }
+
+            int remaining = _childCount - i - 1;
+            if (remaining > 0)
+            {
+                Array.Copy(_children, i + 1, _children, i, remaining);
+            }
+
+            _children[--_childCount] = null!;
             child.SetParent(null);
             return true;
         }
@@ -213,22 +353,26 @@ public sealed class XmlElementNode : XmlNode
     /// <param name="attribute">The attribute to add or replace.</param>
     public void SetAttribute(XmlAttributeNode attribute)
     {
-        ArgumentNullException.ThrowIfNull(attribute);
+        ThrowHelper.ThrowIfNull(attribute);
 
         if (attribute.Parent is not null && !ReferenceEquals(attribute.Parent, this))
         {
             throw new InvalidOperationException("The attribute already belongs to a different element.");
         }
 
-        var existing = GetAttribute(attribute.LocalName, attribute.NamespaceUri);
-        if (existing is not null)
+        string namespaceUri = attribute.NamespaceUri;
+        int existingIndex = FindAttributeIndex(attribute.LocalName, namespaceUri);
+        if (existingIndex >= 0)
         {
-            existing.SetParent(null);
-            _attributes.Remove(existing);
+            _attributes![existingIndex].SetParent(null);
+            _attributes[existingIndex] = attribute;
+            attribute.SetParent(this);
+            return;
         }
 
+        EnsureAttributeCapacity(_attributeCount + 1);
         attribute.SetParent(this);
-        _attributes.Add(attribute);
+        _attributes![_attributeCount++] = attribute;
     }
 
     /// <summary>
@@ -239,21 +383,30 @@ public sealed class XmlElementNode : XmlNode
     /// <returns><see langword="true"/> if an attribute was removed; otherwise, <see langword="false"/>.</returns>
     public bool RemoveAttribute(string localName, string? ns = null)
     {
-        var attribute = GetAttribute(localName, ns);
-        if (attribute is null)
+        ThrowHelper.ThrowIfNullOrEmpty(localName);
+
+        int index = FindAttributeIndex(localName, ns ?? string.Empty);
+        if (index < 0)
         {
             return false;
         }
 
+        XmlAttributeNode attribute = _attributes![index];
+        int remaining = _attributeCount - index - 1;
+        if (remaining > 0)
+        {
+            Array.Copy(_attributes, index + 1, _attributes, index, remaining);
+        }
+
+        _attributes[--_attributeCount] = null!;
         attribute.SetParent(null);
-        _attributes.Remove(attribute);
         return true;
     }
 
     /// <inheritdoc />
     public override void WriteTo(Utf8XmlWriter writer)
     {
-        ArgumentNullException.ThrowIfNull(writer);
+        ThrowHelper.ThrowIfNull(writer);
         WriteTo(new Utf8XmlNodeWriter(writer));
     }
 
@@ -261,14 +414,21 @@ public sealed class XmlElementNode : XmlNode
     {
         writer.WriteStartElement(Prefix, LocalName, NamespaceUri);
 
-        foreach (var attribute in _attributes)
+        for (int i = 0; i < _attributeCount; i++)
         {
-            attribute.WriteTo(writer);
+            _attributes![i].WriteTo(writer);
         }
 
-        foreach (var child in _children)
+        if (_directText is not null && _childCount == 0)
         {
-            child.WriteTo(writer);
+            writer.WriteString(_directText);
+        }
+        else
+        {
+            for (int i = 0; i < _childCount; i++)
+            {
+                _children![i].WriteTo(writer);
+            }
         }
 
         writer.WriteEndElement();
@@ -276,9 +436,20 @@ public sealed class XmlElementNode : XmlNode
 
     private static void AppendInnerText(XmlElementNode element, StringBuilder builder)
     {
-        foreach (var child in element.Children)
+        if (element._directText is not null && element._childCount == 0)
         {
-            switch (child)
+            builder.Append(element._directText);
+            return;
+        }
+
+        if (element._children is null)
+        {
+            return;
+        }
+
+        for (int i = 0; i < element._childCount; i++)
+        {
+            switch (element._children[i])
             {
                 case XmlTextNode text:
                     builder.Append(text.Value);
@@ -292,4 +463,131 @@ public sealed class XmlElementNode : XmlNode
             }
         }
     }
+
+    private int FindAttributeIndex(string localName, string namespaceUri)
+    {
+        if (_attributes is null)
+        {
+            return -1;
+        }
+
+        for (int i = 0; i < _attributeCount; i++)
+        {
+            XmlAttributeNode attribute = _attributes[i];
+            if (string.Equals(attribute.LocalName, localName, StringComparison.Ordinal) &&
+                string.Equals(attribute.NamespaceUri, namespaceUri, StringComparison.Ordinal))
+            {
+                return i;
+            }
+        }
+
+        return -1;
+    }
+
+    private void InitializeAttributes(IEnumerable<XmlAttributeNode>? attributes)
+    {
+        if (attributes is null)
+        {
+            return;
+        }
+
+        switch (attributes)
+        {
+            case List<XmlAttributeNode> list when list.Count > 0:
+                _attributes = new XmlAttributeNode[list.Count];
+                list.CopyTo(_attributes, 0);
+                _attributeCount = list.Count;
+                break;
+            case XmlAttributeNode[] array when array.Length > 0:
+                _attributes = new XmlAttributeNode[array.Length];
+                array.AsSpan().CopyTo(_attributes);
+                _attributeCount = array.Length;
+                break;
+            case ICollection<XmlAttributeNode> collection when collection.Count > 0:
+                _attributes = new XmlAttributeNode[collection.Count];
+                foreach (var attribute in collection)
+                {
+                    _attributes[_attributeCount++] = attribute;
+                }
+
+                break;
+            default:
+                foreach (var attribute in attributes)
+                {
+                    EnsureAttributeCapacity(_attributeCount + 1);
+                    _attributes![_attributeCount++] = attribute;
+                }
+
+                break;
+        }
+
+        for (int i = 0; i < _attributeCount; i++)
+        {
+            _attributes![i].SetParent(this);
+        }
+    }
+
+    private void EnsureAttributeCapacity(int required)
+    {
+        if (_attributes is not null && _attributes.Length >= required)
+        {
+            return;
+        }
+
+        int newCapacity = _attributes is null ? 4 : _attributes.Length * 2;
+        if (newCapacity < required)
+        {
+            newCapacity = required;
+        }
+
+        Array.Resize(ref _attributes, newCapacity);
+    }
+
+    private void EnsureChildCapacity(int required)
+    {
+        if (_children is not null && _children.Length >= required)
+        {
+            return;
+        }
+
+        int newCapacity = _children is null ? 4 : _children.Length * 2;
+        if (newCapacity < required)
+        {
+            newCapacity = required;
+        }
+
+        Array.Resize(ref _children, newCapacity);
+    }
+}
+
+internal readonly struct ArraySlice<T> : IReadOnlyList<T>
+{
+    private readonly T[]? _array;
+    private readonly int _count;
+
+    public ArraySlice(T[]? array, int count)
+    {
+        _array = array;
+        _count = count;
+    }
+
+    public int Count => _count;
+
+    public T this[int index]
+        => (uint)index < (uint)_count ? _array![index] : throw new ArgumentOutOfRangeException(nameof(index));
+
+    public IEnumerator<T> GetEnumerator()
+    {
+        if (_array is null)
+        {
+            yield break;
+        }
+
+        for (int i = 0; i < _count; i++)
+        {
+            yield return _array[i];
+        }
+    }
+
+    IEnumerator IEnumerable.GetEnumerator() => GetEnumerator();
 }

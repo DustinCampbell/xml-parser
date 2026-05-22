@@ -190,16 +190,16 @@ internal sealed class TextXmlNodeWriter : XmlNodeWriter
     }
 
     private static string EscapeText(string value) => value
-        .Replace("&", "&amp;", StringComparison.Ordinal)
-        .Replace("<", "&lt;", StringComparison.Ordinal)
-        .Replace(">", "&gt;", StringComparison.Ordinal);
+        .Replace("&", "&amp;")
+        .Replace("<", "&lt;")
+        .Replace(">", "&gt;");
 
     private static string EscapeAttributeValue(string value) => EscapeText(value)
-        .Replace("\"", "&quot;", StringComparison.Ordinal)
-        .Replace("'", "&apos;", StringComparison.Ordinal)
-        .Replace("\r", "&#xD;", StringComparison.Ordinal)
-        .Replace("\n", "&#xA;", StringComparison.Ordinal)
-        .Replace("\t", "&#x9;", StringComparison.Ordinal);
+        .Replace("\"", "&quot;")
+        .Replace("'", "&apos;")
+        .Replace("\r", "&#xD;")
+        .Replace("\n", "&#xA;")
+        .Replace("\t", "&#x9;");
 }
 
 internal sealed class Utf8XmlNodeWriter : XmlNodeWriter

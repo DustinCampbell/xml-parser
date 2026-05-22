@@ -1,10 +1,7 @@
 using BenchmarkDotNet.Attributes;
-using System.Collections;
 using System.IO;
-using System.Reflection;
 using System.Text.Xml;
 using System.Xml.Linq;
-using SystemTextXmlDocument = System.Text.Xml.XmlDocument;
 
 namespace System.Text.Xml.Benchmarks;
 
@@ -25,8 +22,8 @@ public class DocumentBenchmarks
     [Benchmark]
     public int NavigateSystemTextXml()
     {
-        var document = SystemTextXmlDocument.Parse(_xml);
-        return TraverseSystemTextXmlNode(GetPropertyValue(document, "Root"));
+        using var document = XmlDocument.Parse(_xml);
+        return TraverseElement(document.Root);
     }
 
     [Benchmark]
@@ -47,7 +44,7 @@ public class DocumentBenchmarks
     [Benchmark]
     public int RoundTripSystemTextXml()
     {
-        var document = SystemTextXmlDocument.Parse(_xml);
+        using var document = XmlDocument.Parse(_xml);
         using var stream = new MemoryStream();
         document.Save(stream);
         return checked((int)stream.Length);
@@ -70,6 +67,36 @@ public class DocumentBenchmarks
         using var stream = new MemoryStream();
         document.Save(stream, SaveOptions.DisableFormatting);
         return checked((int)stream.Length);
+    }
+
+    private static int TraverseElement(XmlElementNode element)
+    {
+        int total = element.LocalName.Length;
+
+        for (int i = 0; i < element.Attributes.Count; i++)
+        {
+            var attr = element.Attributes[i];
+            total += attr.LocalName.Length + attr.Value.Length;
+        }
+
+        for (int i = 0; i < element.Children.Count; i++)
+        {
+            var child = element.Children[i];
+            if (child is XmlElementNode childElement)
+            {
+                total += TraverseElement(childElement);
+            }
+            else if (child is XmlTextNode text)
+            {
+                total += text.Value.Length;
+            }
+            else if (child is XmlCDataNode cdata)
+            {
+                total += cdata.Value.Length;
+            }
+        }
+
+        return total;
     }
 
     private static int TraverseSystemXmlElement(System.Xml.XmlElement element)
@@ -119,69 +146,4 @@ public class DocumentBenchmarks
 
         return total;
     }
-
-    private static int TraverseSystemTextXmlNode(object? node)
-    {
-        if (node is null)
-        {
-            return 0;
-        }
-
-        var total = (GetStringProperty(node, "LocalName") ?? GetStringProperty(node, "Name") ?? string.Empty).Length;
-        total += SumAttributes(node);
-        total += (GetStringProperty(node, "Value") ?? string.Empty).Length;
-
-        foreach (var child in EnumerateChildren(node))
-        {
-            total += TraverseSystemTextXmlNode(child);
-        }
-
-        return total;
-    }
-
-    private static int SumAttributes(object node)
-    {
-        var attributes = GetPropertyValue(node, "Attributes") as IEnumerable;
-        if (attributes is null)
-        {
-            return 0;
-        }
-
-        var total = 0;
-        foreach (var attribute in attributes)
-        {
-            if (attribute is null)
-            {
-                continue;
-            }
-
-            total += (GetStringProperty(attribute, "LocalName") ?? GetStringProperty(attribute, "Name") ?? string.Empty).Length;
-            total += (GetStringProperty(attribute, "Value") ?? string.Empty).Length;
-        }
-
-        return total;
-    }
-
-    private static IEnumerable<object> EnumerateChildren(object node)
-    {
-        var children = GetPropertyValue(node, "Children") as IEnumerable;
-        if (children is null)
-        {
-            yield break;
-        }
-
-        foreach (var child in children)
-        {
-            if (child is not null)
-            {
-                yield return child;
-            }
-        }
-    }
-
-    private static object? GetPropertyValue(object target, string propertyName) =>
-        target.GetType().GetProperty(propertyName, BindingFlags.Instance | BindingFlags.Public)?.GetValue(target);
-
-    private static string? GetStringProperty(object target, string propertyName) =>
-        GetPropertyValue(target, propertyName) as string;
 }

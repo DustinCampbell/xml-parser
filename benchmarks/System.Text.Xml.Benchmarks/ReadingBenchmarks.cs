@@ -56,6 +56,7 @@ public class ReadingBenchmarks
             count++;
         }
 
+        reader.Dispose();
         return count;
     }
 

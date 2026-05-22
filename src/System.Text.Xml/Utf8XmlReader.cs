@@ -1,3 +1,4 @@
+using System.Runtime.CompilerServices;
 using System.Text;
 
 namespace System.Text.Xml;
@@ -14,6 +15,37 @@ public ref struct Utf8XmlReader
     private const int SpecialPrefixXmlns = -3;
 
     private static readonly Encoding s_utf8 = new UTF8Encoding(false, true);
+    private static ReadOnlySpan<byte> NameTerminators => " \t\r\n>/=?"u8;
+
+    // Lookup table: 1 = name terminator character, 0 = valid name character
+    private static ReadOnlySpan<byte> NameTerminatorTable => new byte[256]
+    {
+        // 0x00-0x0F
+        1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
+        // 0x10-0x1F
+        1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
+        // 0x20-0x2F: space=term, !=ok, "=ok, #=ok, $=ok, %=ok, &=ok, '=ok, (=ok, )=ok, *=ok, +=ok, ,=ok, -=ok, .=ok, /=term
+        1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1,
+        // 0x30-0x3F: 0-9=ok, :=ok, ;=ok, <=ok, ==term, >=term, ?=term
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1,
+        // 0x40-0x4F: @-O all ok
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        // 0x50-0x5F: P-_ all ok
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        // 0x60-0x6F: `-o all ok
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        // 0x70-0x7F: p-DEL, DEL is term
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1,
+        // 0x80-0xFF: all ok (UTF-8 continuation/start bytes are valid in names)
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    };
 
     private readonly ReadOnlySpan<byte> _xmlData;
     private readonly XmlReaderOptions _options;
@@ -58,15 +90,15 @@ public ref struct Utf8XmlReader
         _xmlData = xmlData;
         _options = options;
 
-        _elementStack = new ElementFrame[InitialElementCapacity];
+        _elementStack = System.Buffers.ArrayPool<ElementFrame>.Shared.Rent(InitialElementCapacity);
         _elementStackCount = 0;
 
-        _namespaces = new NamespaceEntry[InitialNamespaceCapacity];
+        _namespaces = System.Buffers.ArrayPool<NamespaceEntry>.Shared.Rent(InitialNamespaceCapacity);
         _namespaces[0] = NamespaceEntry.CreateSpecial(SpecialPrefixXml, NamespaceUriKind.Xml);
         _namespaces[1] = NamespaceEntry.CreateSpecial(SpecialPrefixXmlns, NamespaceUriKind.Xmlns);
         _namespaceCount = 2;
 
-        _attributes = new AttributeEntry[InitialAttributeCapacity];
+        _attributes = System.Buffers.ArrayPool<AttributeEntry>.Shared.Rent(InitialAttributeCapacity);
         _attributeCount = 0;
         _attributeIndex = -1;
 
@@ -91,6 +123,30 @@ public ref struct Utf8XmlReader
         _prefixStart = 0;
         _prefixLength = 0;
         _namespaceUri = default;
+    }
+
+    /// <summary>
+    /// Returns rented arrays to the pool. Call when done with the reader.
+    /// </summary>
+    public void Dispose()
+    {
+        if (_elementStack is not null)
+        {
+            System.Buffers.ArrayPool<ElementFrame>.Shared.Return(_elementStack, clearArray: false);
+            _elementStack = null!;
+        }
+
+        if (_namespaces is not null)
+        {
+            System.Buffers.ArrayPool<NamespaceEntry>.Shared.Return(_namespaces, clearArray: false);
+            _namespaces = null!;
+        }
+
+        if (_attributes is not null)
+        {
+            System.Buffers.ArrayPool<AttributeEntry>.Shared.Return(_attributes, clearArray: false);
+            _attributes = null!;
+        }
     }
 
     /// <summary>
@@ -160,6 +216,7 @@ public ref struct Utf8XmlReader
     /// <summary>
     /// Reads the next XML token.
     /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public bool Read()
     {
         _attributeIndex = -1;
@@ -172,8 +229,6 @@ public ref struct Utf8XmlReader
 
         while (_pos < _xmlData.Length)
         {
-            ResetCurrentValue();
-
             if (_xmlData[_pos] == XmlConstants.LessThan)
             {
                 if (TryReadMarkup())
@@ -262,35 +317,49 @@ public ref struct Utf8XmlReader
             return string.Empty;
         }
 
-        string text = s_utf8.GetString(value);
-        return _tokenType is XmlTokenType.Text or XmlTokenType.Attribute or XmlTokenType.EntityReference
-            ? Unescape(text)
-            : text;
+        string text = DecodeUtf8(value);
+        if (_tokenType is XmlTokenType.Text or XmlTokenType.Attribute or XmlTokenType.EntityReference)
+        {
+            // Fast path: only unescape if there's actually an ampersand
+            return value.IndexOf((byte)'&') >= 0 ? Unescape(text) : text;
+        }
+
+        return text;
     }
 
     /// <summary>
     /// Returns the current local name as a string.
     /// </summary>
-    public string GetLocalName() => LocalNameSpan.IsEmpty ? string.Empty : s_utf8.GetString(LocalNameSpan);
+    public string GetLocalName() => LocalNameSpan.IsEmpty ? string.Empty : DecodeUtf8(LocalNameSpan);
 
     /// <summary>
     /// Returns the current prefix as a string.
     /// </summary>
-    public string GetPrefix() => PrefixSpan.IsEmpty ? string.Empty : s_utf8.GetString(PrefixSpan);
+    public string GetPrefix() => PrefixSpan.IsEmpty ? string.Empty : DecodeUtf8(PrefixSpan);
 
     /// <summary>
     /// Returns the current namespace URI as a string.
     /// </summary>
     public string GetNamespaceUri()
     {
-        ReadOnlySpan<byte> value = NamespaceUriSpan;
-        if (value.IsEmpty)
+        switch (_namespaceUri.Kind)
         {
-            return string.Empty;
-        }
+            case NamespaceUriKind.None:
+                return string.Empty;
+            case NamespaceUriKind.Xml:
+                return "http://www.w3.org/XML/1998/namespace";
+            case NamespaceUriKind.Xmlns:
+                return "http://www.w3.org/2000/xmlns/";
+            default:
+                ReadOnlySpan<byte> value = _xmlData.Slice(_namespaceUri.Start, _namespaceUri.Length);
+                if (value.IsEmpty)
+                {
+                    return string.Empty;
+                }
 
-        string text = s_utf8.GetString(value);
-        return text.IndexOf('&') >= 0 ? Unescape(text) : text;
+                string text = DecodeUtf8(value);
+                return value.IndexOf((byte)'&') >= 0 ? Unescape(text) : text;
+        }
     }
 
     private void EmitSyntheticEndElement()
@@ -311,37 +380,49 @@ public ref struct Utf8XmlReader
         _elementStackCount--;
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private bool TryReadMarkup()
     {
-        if (IsXmlDeclarationStart())
+        if (_pos + 1 >= _xmlData.Length)
         {
-            return ReadXmlDeclaration();
+            ThrowUnexpectedEndOfFileAt(_pos);
         }
 
-        ReadOnlySpan<byte> remaining = _xmlData.Slice(_pos);
-        if (remaining.StartsWith("<!--"u8))
-        {
-            return ReadComment();
-        }
-
-        if (remaining.StartsWith("<![CDATA["u8))
-        {
-            return ReadCData();
-        }
-
-        if (remaining.StartsWith("<?"u8))
-        {
-            return ReadProcessingInstruction();
-        }
-
-        if (remaining.StartsWith("</"u8))
+        byte next = _xmlData[_pos + 1];
+        if (next == XmlConstants.Slash)
         {
             return ReadEndElement();
         }
 
-        if (remaining.StartsWith("<!DOCTYPE"u8))
+        if (next == XmlConstants.Question)
         {
-            ThrowXmlExceptionAt("Document type declarations are not supported.", _pos);
+            if (IsXmlDeclarationStart())
+            {
+                return ReadXmlDeclaration();
+            }
+
+            return ReadProcessingInstruction();
+        }
+
+        if (next == XmlConstants.Exclamation)
+        {
+            ReadOnlySpan<byte> remaining = _xmlData.Slice(_pos);
+            if (remaining.StartsWith("<!--"u8))
+            {
+                return ReadComment();
+            }
+
+            if (remaining.StartsWith("<![CDATA["u8))
+            {
+                return ReadCData();
+            }
+
+            if (remaining.StartsWith("<!DOCTYPE"u8))
+            {
+                ThrowXmlExceptionAt("Document type declarations are not supported.", _pos);
+            }
+
+            ThrowXmlExceptionAt("Unexpected markup.", _pos);
         }
 
         return ReadStartElement();
@@ -545,14 +626,19 @@ public ref struct Utf8XmlReader
 
         cursor++;
         int valueStart = cursor;
-        int relativeEnd = _xmlData.Slice(valueStart).IndexOf(quote);
-        if (relativeEnd < 0)
+        // Scan for closing quote - manual loop is faster for typical short attribute values
+        while (cursor < _xmlData.Length && _xmlData[cursor] != quote)
+        {
+            cursor++;
+        }
+
+        if (cursor >= _xmlData.Length)
         {
             ThrowUnexpectedEndOfFileAt(_xmlData.Length);
         }
 
-        int valueLength = relativeEnd;
-        cursor = valueStart + relativeEnd + 1;
+        int valueLength = cursor - valueStart;
+        cursor++; // skip closing quote
 
         EnsureAttributeCapacity(_attributeCount + 1);
 
@@ -660,6 +746,11 @@ public ref struct Utf8XmlReader
 
     private void ResolveAttributeNamespaces()
     {
+        if (_attributeCount == 0)
+        {
+            return;
+        }
+
         for (int i = 0; i < _attributeCount; i++)
         {
             AttributeEntry attribute = _attributes[i];
@@ -714,59 +805,90 @@ public ref struct Utf8XmlReader
 
     private void ParseQualifiedName(int start, out int end, out int prefixLength, out int localNameStart, out int localNameLength)
     {
-        int cursor = start;
-        int colonIndex = -1;
-        while (cursor < _xmlData.Length)
+        ReadOnlySpan<byte> table = NameTerminatorTable;
+        int pos = start;
+        int dataLength = _xmlData.Length;
+        int colonIdx = -1;
+
+        while (pos < dataLength)
         {
-            byte value = _xmlData[cursor];
-            if (IsNameTerminator(value))
+            byte b = _xmlData[pos];
+            if (table[b] != 0)
             {
                 break;
             }
 
-            if (value == XmlConstants.Colon)
+            if (b == XmlConstants.Colon && colonIdx < 0)
             {
-                if (colonIndex >= 0)
-                {
-                    ThrowXmlExceptionAt("Invalid qualified XML name.", cursor);
-                }
-
-                colonIndex = cursor;
+                colonIdx = pos - start;
             }
 
-            cursor++;
+            pos++;
         }
 
-        if (cursor == start)
+        int nameLength = pos - start;
+        end = pos;
+
+        if (nameLength == 0)
         {
             ThrowXmlExceptionAt("Expected an XML name.", start);
         }
 
-        end = cursor;
-        if (colonIndex < 0)
+        if (colonIdx < 0)
         {
             prefixLength = 0;
             localNameStart = start;
-            localNameLength = end - start;
+            localNameLength = nameLength;
             return;
         }
 
-        if (colonIndex == start || colonIndex == end - 1)
+        if (colonIdx == 0 || colonIdx == nameLength - 1)
         {
-            ThrowXmlExceptionAt("Invalid qualified XML name.", colonIndex);
+            ThrowXmlExceptionAt("Invalid qualified XML name.", start + colonIdx);
         }
 
-        prefixLength = colonIndex - start;
-        localNameStart = colonIndex + 1;
-        localNameLength = end - localNameStart;
+        // Check for second colon
+        for (int i = start + colonIdx + 1; i < pos; i++)
+        {
+            if (_xmlData[i] == XmlConstants.Colon)
+            {
+                ThrowXmlExceptionAt("Invalid qualified XML name.", i);
+            }
+        }
+
+        prefixLength = colonIdx;
+        localNameStart = start + colonIdx + 1;
+        localNameLength = nameLength - colonIdx - 1;
     }
 
+    private static ReadOnlySpan<byte> WhitespaceBytes => " \t\r\n"u8;
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private void SkipWhitespace(ref int cursor)
     {
+        // Most whitespace runs in well-formed XML are 0-2 bytes (single space between attributes)
+        // A simple loop is faster than vectorized IndexOfAnyExcept for short runs
         while (cursor < _xmlData.Length && IsWhitespace(_xmlData[cursor]))
         {
             cursor++;
         }
+    }
+
+    private static int IndexOfAnyExceptWhitespace(ReadOnlySpan<byte> value)
+    {
+#if NET7_0_OR_GREATER
+        return value.IndexOfAnyExcept(WhitespaceBytes);
+#else
+        for (int i = 0; i < value.Length; i++)
+        {
+            if (!IsWhitespace(value[i]))
+            {
+                return i;
+            }
+        }
+
+        return -1;
+#endif
     }
 
     private void EnsureAttributeCapacity(int required)
@@ -782,7 +904,14 @@ public ref struct Utf8XmlReader
             newSize = required;
         }
 
-        Array.Resize(ref _attributes, newSize);
+        var newArray = System.Buffers.ArrayPool<AttributeEntry>.Shared.Rent(newSize);
+        if (_attributeCount > 0)
+        {
+            Array.Copy(_attributes, newArray, _attributeCount);
+        }
+
+        System.Buffers.ArrayPool<AttributeEntry>.Shared.Return(_attributes, clearArray: false);
+        _attributes = newArray;
     }
 
     private void EnsureElementCapacity(int required)
@@ -798,7 +927,14 @@ public ref struct Utf8XmlReader
             newSize = required;
         }
 
-        Array.Resize(ref _elementStack, newSize);
+        var newArray = System.Buffers.ArrayPool<ElementFrame>.Shared.Rent(newSize);
+        if (_elementStackCount > 0)
+        {
+            Array.Copy(_elementStack, newArray, _elementStackCount);
+        }
+
+        System.Buffers.ArrayPool<ElementFrame>.Shared.Return(_elementStack, clearArray: false);
+        _elementStack = newArray;
     }
 
     private void EnsureNamespaceCapacity(int required)
@@ -814,7 +950,14 @@ public ref struct Utf8XmlReader
             newSize = required;
         }
 
-        Array.Resize(ref _namespaces, newSize);
+        var newArray = System.Buffers.ArrayPool<NamespaceEntry>.Shared.Rent(newSize);
+        if (_namespaceCount > 0)
+        {
+            Array.Copy(_namespaces, newArray, _namespaceCount);
+        }
+
+        System.Buffers.ArrayPool<NamespaceEntry>.Shared.Return(_namespaces, clearArray: false);
+        _namespaces = newArray;
     }
 
     private void PushElement(ElementFrame frame)
@@ -827,18 +970,6 @@ public ref struct Utf8XmlReader
     {
         EnsureNamespaceCapacity(_namespaceCount + 1);
         _namespaces[_namespaceCount++] = entry;
-    }
-
-    private void ResetCurrentValue()
-    {
-        _valueStart = 0;
-        _valueLength = 0;
-        _localNameStart = 0;
-        _localNameLength = 0;
-        _prefixStart = 0;
-        _prefixLength = 0;
-        _namespaceUri = default;
-        _isEmptyElement = false;
     }
 
     private void Advance(int count) => _pos += count;
@@ -948,20 +1079,20 @@ public ref struct Utf8XmlReader
         => value is XmlConstants.Space or XmlConstants.Tab or XmlConstants.CarriageReturn or XmlConstants.LineFeed;
 
     private static bool IsAllWhitespace(ReadOnlySpan<byte> value)
+#if NET7_0_OR_GREATER
+        => value.IndexOfAnyExcept(WhitespaceBytes) < 0;
+#else
+        => IndexOfAnyExceptWhitespace(value) < 0;
+#endif
+
+    private static string DecodeUtf8(ReadOnlySpan<byte> value)
     {
-        for (int i = 0; i < value.Length; i++)
-        {
-            if (!IsWhitespace(value[i]))
-            {
-                return false;
-            }
-        }
-
-        return true;
+#if NET
+        return s_utf8.GetString(value);
+#else
+        return s_utf8.GetString(value.ToArray());
+#endif
     }
-
-    private static bool IsNameTerminator(byte value)
-        => IsWhitespace(value) || value is XmlConstants.GreaterThan or XmlConstants.Slash or XmlConstants.EqualSign or XmlConstants.Question;
 
     private bool NameEquals(int start, int length, ReadOnlySpan<byte> value)
         => length == value.Length && (length == 0 || _xmlData.Slice(start, length).SequenceEqual(value));
@@ -1013,13 +1144,13 @@ public ref struct Utf8XmlReader
                 "gt" => '>',
                 "quot" => '"',
                 "apos" => '\'',
-                _ when entity.StartsWith("#x", StringComparison.OrdinalIgnoreCase) && int.TryParse(entity[2..], System.Globalization.NumberStyles.HexNumber, null, out int hex) => (char)hex,
-                _ when entity.StartsWith('#') && int.TryParse(entity[1..], out int dec) => (char)dec,
+                _ when entity.StartsWith("#x", StringComparison.OrdinalIgnoreCase) && int.TryParse(entity.Substring(2), System.Globalization.NumberStyles.HexNumber, null, out int hex) => (char)hex,
+                _ when entity.Length > 0 && entity[0] == '#' && int.TryParse(entity.Substring(1), out int dec) => (char)dec,
                 _ => '&',
             });
 
             if (!(entity is "amp" or "lt" or "gt" or "quot" or "apos") &&
-                !(entity.StartsWith("#x", StringComparison.OrdinalIgnoreCase) || entity.StartsWith('#')))
+                !(entity.StartsWith("#x", StringComparison.OrdinalIgnoreCase) || (entity.Length > 0 && entity[0] == '#')))
             {
                 builder.Append(entity);
                 builder.Append(';');

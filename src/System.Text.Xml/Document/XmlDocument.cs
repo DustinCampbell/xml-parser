@@ -51,7 +51,7 @@ public sealed class XmlDocument : IDisposable
     /// <returns>The parsed <see cref="XmlDocument"/>.</returns>
     public static XmlDocument Parse(string xml)
     {
-        ArgumentNullException.ThrowIfNull(xml);
+        ThrowHelper.ThrowIfNull(xml);
         return Parse(Encoding.UTF8.GetBytes(xml));
     }
 
@@ -73,7 +73,7 @@ public sealed class XmlDocument : IDisposable
     /// <returns>A task that represents the asynchronous parse operation.</returns>
     public static async Task<XmlDocument> ParseAsync(Stream stream, CancellationToken cancellationToken = default)
     {
-        ArgumentNullException.ThrowIfNull(stream);
+        ThrowHelper.ThrowIfNull(stream);
         var buffer = await ReadAllBytesAsync(stream, cancellationToken).ConfigureAwait(false);
         return Parse(buffer);
     }
@@ -85,7 +85,7 @@ public sealed class XmlDocument : IDisposable
     /// <returns>The parsed <see cref="XmlDocument"/>.</returns>
     public static XmlDocument Load(string filePath)
     {
-        ArgumentException.ThrowIfNullOrEmpty(filePath);
+        ThrowHelper.ThrowIfNullOrEmpty(filePath);
         using var stream = File.OpenRead(filePath);
         return Load(stream);
     }
@@ -97,7 +97,7 @@ public sealed class XmlDocument : IDisposable
     /// <returns>The parsed <see cref="XmlDocument"/>.</returns>
     public static XmlDocument Load(Stream stream)
     {
-        ArgumentNullException.ThrowIfNull(stream);
+        ThrowHelper.ThrowIfNull(stream);
         return Parse(ReadAllBytes(stream));
     }
 
@@ -118,8 +118,8 @@ public sealed class XmlDocument : IDisposable
     /// <param name="writer">The writer to receive the document.</param>
     public void WriteTo(Utf8XmlWriter writer)
     {
-        ObjectDisposedException.ThrowIf(_disposed, this);
-        ArgumentNullException.ThrowIfNull(writer);
+        ThrowHelper.ThrowIfDisposed(_disposed, this);
+        ThrowHelper.ThrowIfNull(writer);
 
         var nodeWriter = new Utf8XmlNodeWriter(writer);
         Declaration?.WriteTo(nodeWriter);
@@ -132,10 +132,10 @@ public sealed class XmlDocument : IDisposable
     /// <param name="stream">The destination stream.</param>
     public void Save(Stream stream)
     {
-        ObjectDisposedException.ThrowIf(_disposed, this);
-        ArgumentNullException.ThrowIfNull(stream);
+        ThrowHelper.ThrowIfDisposed(_disposed, this);
+        ThrowHelper.ThrowIfNull(stream);
 
-        using var textWriter = new StreamWriter(stream, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false), leaveOpen: true);
+        using var textWriter = new StreamWriter(stream, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false), 1024, leaveOpen: true);
         var nodeWriter = new TextXmlNodeWriter(textWriter);
         Declaration?.WriteTo(nodeWriter);
         Root.WriteTo(nodeWriter);
@@ -148,8 +148,8 @@ public sealed class XmlDocument : IDisposable
     /// <param name="filePath">The destination file path.</param>
     public void Save(string filePath)
     {
-        ObjectDisposedException.ThrowIf(_disposed, this);
-        ArgumentException.ThrowIfNullOrEmpty(filePath);
+        ThrowHelper.ThrowIfDisposed(_disposed, this);
+        ThrowHelper.ThrowIfNullOrEmpty(filePath);
 
         using var stream = File.Create(filePath);
         Save(stream);
@@ -163,13 +163,13 @@ public sealed class XmlDocument : IDisposable
     /// <returns>A task that represents the asynchronous save operation.</returns>
     public async Task SaveAsync(Stream stream, CancellationToken cancellationToken = default)
     {
-        ObjectDisposedException.ThrowIf(_disposed, this);
-        ArgumentNullException.ThrowIfNull(stream);
+        ThrowHelper.ThrowIfDisposed(_disposed, this);
+        ThrowHelper.ThrowIfNull(stream);
 
         using var buffer = new MemoryStream();
         Save(buffer);
         buffer.Position = 0;
-        await buffer.CopyToAsync(stream, cancellationToken).ConfigureAwait(false);
+        await buffer.CopyToAsync(stream, 81920, cancellationToken).ConfigureAwait(false);
     }
 
     /// <summary>
@@ -215,7 +215,7 @@ public sealed class XmlDocument : IDisposable
         }
 
         using var buffer = new MemoryStream();
-        await stream.CopyToAsync(buffer, cancellationToken).ConfigureAwait(false);
+        await stream.CopyToAsync(buffer, 81920, cancellationToken).ConfigureAwait(false);
         return buffer.ToArray();
     }
 
@@ -231,10 +231,14 @@ public sealed class XmlDocument : IDisposable
                     IgnoreWhitespace = true,
                 });
 
-            var elementStack = new Stack<XmlElementNode>(16);
+            try
+            {
+            var elementStack = new XmlElementNode[16];
+            int elementStackCount = 0;
             XmlDeclarationNode? declaration = null;
             XmlElementNode? root = null;
             bool skipNextEndElement = false;
+            var nameCache = new Utf8StringCache(64);
 
             while (reader.Read())
             {
@@ -246,16 +250,20 @@ public sealed class XmlDocument : IDisposable
 
                     case XmlTokenType.StartElement:
                     {
-                        var localName = reader.GetLocalName();
-                        var prefix = reader.GetPrefix();
+                        var localName = nameCache.GetOrAdd(reader.LocalNameSpan);
+                        var prefix = nameCache.GetOrAdd(reader.PrefixSpan);
                         var namespaceUri = reader.GetNamespaceUri();
+                        if (namespaceUri.Length > 0)
+                        {
+                            namespaceUri = nameCache.GetOrAdd(reader.NamespaceUriSpan);
+                        }
                         var isEmptyElement = reader.IsEmptyElement;
-                        var attributes = ReadAttributes(ref reader);
+                        var attributes = ReadAttributes(ref reader, nameCache);
                         var element = new XmlElementNode(localName, prefix, namespaceUri, attributes);
 
-                        if (elementStack.Count > 0)
+                        if (elementStackCount > 0)
                         {
-                            elementStack.Peek().AddChild(element);
+                            elementStack[elementStackCount - 1].AddChildInternal(element);
                         }
                         else
                         {
@@ -264,7 +272,12 @@ public sealed class XmlDocument : IDisposable
 
                         if (!isEmptyElement)
                         {
-                            elementStack.Push(element);
+                            if (elementStackCount == elementStack.Length)
+                            {
+                                Array.Resize(ref elementStack, elementStack.Length * 2);
+                            }
+
+                            elementStack[elementStackCount++] = element;
                         }
                         else
                         {
@@ -279,26 +292,38 @@ public sealed class XmlDocument : IDisposable
                         {
                             skipNextEndElement = false;
                         }
-                        else if (elementStack.Count > 0)
+                        else if (elementStackCount > 0)
                         {
-                            elementStack.Pop();
+                            elementStack[--elementStackCount] = null!;
                         }
                         break;
 
                     case XmlTokenType.Text:
-                        AddChild(elementStack, new XmlTextNode(reader.GetString() ?? string.Empty));
+                        if (elementStackCount > 0)
+                        {
+                            elementStack[elementStackCount - 1].SetDirectText(reader.GetString() ?? string.Empty);
+                        }
                         break;
 
                     case XmlTokenType.CData:
-                        AddChild(elementStack, new XmlCDataNode(reader.GetString() ?? string.Empty));
+                        if (elementStackCount > 0)
+                        {
+                            elementStack[elementStackCount - 1].AddChildInternal(new XmlCDataNode(reader.GetString() ?? string.Empty));
+                        }
                         break;
 
                     case XmlTokenType.Comment:
-                        AddChild(elementStack, new XmlCommentNode(reader.GetString() ?? string.Empty));
+                        if (elementStackCount > 0)
+                        {
+                            elementStack[elementStackCount - 1].AddChildInternal(new XmlCommentNode(reader.GetString() ?? string.Empty));
+                        }
                         break;
 
                     case XmlTokenType.ProcessingInstruction:
-                        AddChild(elementStack, new XmlProcessingInstructionNode(reader.GetLocalName(), reader.GetString()));
+                        if (elementStackCount > 0)
+                        {
+                            elementStack[elementStackCount - 1].AddChildInternal(new XmlProcessingInstructionNode(reader.GetLocalName(), reader.GetString()));
+                        }
                         break;
                 }
             }
@@ -309,23 +334,71 @@ public sealed class XmlDocument : IDisposable
             }
 
             return new XmlDocument(root, declaration);
+            }
+            finally
+            {
+                reader.Dispose();
+            }
         }
 
-        private static IEnumerable<XmlAttributeNode> ReadAttributes(ref Utf8XmlReader reader)
+        private static XmlAttributeNode[]? ReadAttributes(ref Utf8XmlReader reader, Utf8StringCache nameCache)
         {
-            List<XmlAttributeNode>? attributes = null;
-
-            while (reader.MoveToNextAttribute())
+            if (!reader.MoveToNextAttribute())
             {
-                (attributes ??= new List<XmlAttributeNode>()).Add(
-                    new XmlAttributeNode(
-                        reader.GetLocalName(),
-                        reader.GetPrefix(),
-                        reader.GetNamespaceUri(),
-                        reader.GetString() ?? string.Empty));
+                return null;
             }
 
-            return attributes is null ? Array.Empty<XmlAttributeNode>() : attributes;
+            // First attribute
+            var first = new XmlAttributeNode(
+                nameCache.GetOrAdd(reader.LocalNameSpan),
+                nameCache.GetOrAdd(reader.PrefixSpan),
+                GetCachedNamespaceUri(ref reader, nameCache),
+                reader.GetString() ?? string.Empty);
+
+            if (!reader.MoveToNextAttribute())
+            {
+                return new[] { first };
+            }
+
+            // Multiple attributes - use small stack buffer
+            var buffer = new XmlAttributeNode[8];
+            buffer[0] = first;
+            int count = 1;
+
+            do
+            {
+                if (count == buffer.Length)
+                {
+                    Array.Resize(ref buffer, buffer.Length * 2);
+                }
+
+                buffer[count++] = new XmlAttributeNode(
+                    nameCache.GetOrAdd(reader.LocalNameSpan),
+                    nameCache.GetOrAdd(reader.PrefixSpan),
+                    GetCachedNamespaceUri(ref reader, nameCache),
+                    reader.GetString() ?? string.Empty);
+            }
+            while (reader.MoveToNextAttribute());
+
+            if (count == buffer.Length)
+            {
+                return buffer;
+            }
+
+            var result = new XmlAttributeNode[count];
+            Array.Copy(buffer, result, count);
+            return result;
+        }
+
+        private static string GetCachedNamespaceUri(ref Utf8XmlReader reader, Utf8StringCache cache)
+        {
+            var nsUri = reader.GetNamespaceUri();
+            if (nsUri.Length == 0)
+            {
+                return string.Empty;
+            }
+
+            return cache.GetOrAdd(reader.NamespaceUriSpan);
         }
 
         private static XmlDeclarationNode ParseDeclaration(string declarationText)
@@ -389,15 +462,6 @@ public sealed class XmlDocument : IDisposable
             return new XmlDeclarationNode(version, encoding, standalone);
         }
 
-        private static void AddChild(Stack<XmlElementNode> elementStack, XmlNode child)
-        {
-            if (elementStack.Count == 0)
-            {
-                return;
-            }
-
-            elementStack.Peek().AddChild(child);
-        }
-
     }
+
 }

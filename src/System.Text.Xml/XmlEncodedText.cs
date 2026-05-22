@@ -21,7 +21,7 @@ public readonly struct XmlEncodedText : IEquatable<XmlEncodedText>
     /// </summary>
     public static XmlEncodedText Encode(string value)
     {
-        ArgumentNullException.ThrowIfNull(value);
+        ThrowHelper.ThrowIfNull(value);
         return new XmlEncodedText(Encoding.UTF8.GetBytes(Escape(value)), value);
     }
 
@@ -40,7 +40,24 @@ public readonly struct XmlEncodedText : IEquatable<XmlEncodedText>
     public override bool Equals(object? obj) => obj is XmlEncodedText other && Equals(other);
 
     /// <inheritdoc/>
-    public override int GetHashCode() => _utf8Value is null ? 0 : string.GetHashCode(Convert.ToHexString(_utf8Value), StringComparison.Ordinal);
+    public override int GetHashCode()
+    {
+        if (_utf8Value is null)
+        {
+            return 0;
+        }
+
+        unchecked
+        {
+            int hash = 17;
+            for (int i = 0; i < _utf8Value.Length; i++)
+            {
+                hash = (hash * 31) + _utf8Value[i];
+            }
+
+            return hash;
+        }
+    }
 
     /// <summary>
     /// Compares two values for equality.
@@ -54,9 +71,9 @@ public readonly struct XmlEncodedText : IEquatable<XmlEncodedText>
 
     private static string Escape(string value)
         => value
-            .Replace("&", "&amp;", StringComparison.Ordinal)
-            .Replace("<", "&lt;", StringComparison.Ordinal)
-            .Replace(">", "&gt;", StringComparison.Ordinal)
-            .Replace("\"", "&quot;", StringComparison.Ordinal)
-            .Replace("'", "&apos;", StringComparison.Ordinal);
+            .Replace("&", "&amp;")
+            .Replace("<", "&lt;")
+            .Replace(">", "&gt;")
+            .Replace("\"", "&quot;")
+            .Replace("'", "&apos;");
 }

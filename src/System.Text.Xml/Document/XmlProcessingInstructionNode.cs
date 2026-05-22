@@ -37,7 +37,7 @@ public sealed class XmlProcessingInstructionNode : XmlNode
     /// <inheritdoc />
     public override void WriteTo(Utf8XmlWriter writer)
     {
-        ArgumentNullException.ThrowIfNull(writer);
+        ThrowHelper.ThrowIfNull(writer);
         WriteTo(new Utf8XmlNodeWriter(writer));
     }
 
