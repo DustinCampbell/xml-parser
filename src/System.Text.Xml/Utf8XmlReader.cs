@@ -1113,7 +1113,7 @@ public ref struct Utf8XmlReader
 
     private static ReadOnlySpan<byte> XmlnsNamespaceUriBytes => "http://www.w3.org/2000/xmlns/"u8;
 
-    private static string Unescape(string value)
+    internal static string Unescape(string value)
     {
         if (value.IndexOf('&') < 0)
         {

@@ -113,12 +113,33 @@ internal sealed record XmlSnapshot(
     int CDataCount,
     string InnerText)
 {
-    public static XmlSnapshot From(XmlElementNode root)
+    public static XmlSnapshot From(XmlElement root)
     {
         var elements = root.Descendants().Prepend(root).ToList();
-        var attributes = elements
-            .SelectMany(element => element.Attributes, (element, attribute) => new KeyValuePair<string, string>($"{element.LocalName}@{attribute.LocalName}", attribute.Value))
-            .ToDictionary(pair => pair.Key, pair => pair.Value);
+        var attributes = new Dictionary<string, string>();
+        foreach (var element in elements)
+        {
+            var attrEnum = element.EnumerateAttributes();
+            while (attrEnum.MoveNext())
+            {
+                var attr = attrEnum.Current;
+                attributes[$"{element.LocalName}@{attr.LocalName}"] = attr.Value;
+            }
+        }
+
+        // Count comments and CDATA in child nodes
+        int commentCount = 0;
+        int cdataCount = 0;
+        foreach (var element in elements)
+        {
+            var childEnum = element.EnumerateChildren();
+            while (childEnum.MoveNext())
+            {
+                var child = childEnum.Current;
+                if (child.NodeType == XmlNodeType.Comment) commentCount++;
+                else if (child.NodeType == XmlNodeType.CData) cdataCount++;
+            }
+        }
 
         return new XmlSnapshot(
             root.LocalName,
@@ -126,8 +147,8 @@ internal sealed record XmlSnapshot(
             elements.Select(element => element.LocalName).ToList(),
             elements.Select(element => element.NamespaceUri).ToList(),
             attributes,
-            elements.SelectMany(element => element.Children).OfType<XmlCommentNode>().Count(),
-            elements.SelectMany(element => element.Children).OfType<XmlCDataNode>().Count(),
+            commentCount,
+            cdataCount,
             root.InnerText);
     }
 

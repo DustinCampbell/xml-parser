@@ -80,7 +80,7 @@ public class XmlDocumentTests
     public void Navigation_apis_expose_root_children_elements_and_descendants()
     {
         using var document = XmlDocument.Parse("<root><child id=\"1\" /><child id=\"2\"><grandchild /></child></root>");
-        var children = document.Root.Children.OfType<XmlElementNode>().ToList();
+        var children = document.Root.Elements().ToList();
         var descendants = document.Root.Descendants().ToList();
 
         Assert.Equal(2, children.Count);
@@ -93,16 +93,15 @@ public class XmlDocumentTests
     public void Modifying_document_supports_addchild_removechild_and_setattribute()
     {
         var root = new XmlElementNode(new XmlName("root"));
-        using var document = new XmlDocument(root);
         var child = new XmlElementNode(new XmlName("added"));
         child.AddChild(new XmlTextNode("payload"));
         child.SetAttribute(new XmlAttributeNode(new XmlName("id"), "7"));
 
-        document.Root.AddChild(child);
-        Assert.Equal("7", Assert.Single(document.Root.Elements()).GetAttribute("id")?.Value);
+        root.AddChild(child);
+        Assert.Equal("7", Assert.Single(root.Elements()).GetAttribute("id")?.Value);
 
-        Assert.True(document.Root.RemoveChild(child));
-        Assert.Empty(document.Root.Elements());
+        Assert.True(root.RemoveChild(child));
+        Assert.Empty(root.Elements());
     }
 
     [Fact]

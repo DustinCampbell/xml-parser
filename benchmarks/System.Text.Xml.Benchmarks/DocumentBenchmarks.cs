@@ -69,30 +69,28 @@ public class DocumentBenchmarks
         return checked((int)stream.Length);
     }
 
-    private static int TraverseElement(XmlElementNode element)
+    private static int TraverseElement(XmlElement element)
     {
         int total = element.LocalName.Length;
 
-        for (int i = 0; i < element.Attributes.Count; i++)
+        var attrEnum = element.EnumerateAttributes();
+        while (attrEnum.MoveNext())
         {
-            var attr = element.Attributes[i];
+            var attr = attrEnum.Current;
             total += attr.LocalName.Length + attr.Value.Length;
         }
 
-        for (int i = 0; i < element.Children.Count; i++)
+        var childEnum = element.EnumerateChildren();
+        while (childEnum.MoveNext())
         {
-            var child = element.Children[i];
-            if (child is XmlElementNode childElement)
+            var child = childEnum.Current;
+            if (child.NodeType == XmlNodeType.Element)
             {
-                total += TraverseElement(childElement);
+                total += TraverseElement(child.AsElement());
             }
-            else if (child is XmlTextNode text)
+            else if (child.NodeType == XmlNodeType.Text || child.NodeType == XmlNodeType.CData)
             {
-                total += text.Value.Length;
-            }
-            else if (child is XmlCDataNode cdata)
-            {
-                total += cdata.Value.Length;
+                total += child.Value.Length;
             }
         }
 
