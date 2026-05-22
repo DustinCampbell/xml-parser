@@ -233,5 +233,5 @@ public class Utf8XmlWriterTests
         Assert.Equal("<root />", Encoding.UTF8.GetString(stream.ToArray()));
     }
 
-    private static string GetString(ArrayBufferWriter<byte> buffer) => Encoding.UTF8.GetString(buffer.WrittenSpan);
+    private static string GetString(ArrayBufferWriter<byte> buffer) => Encoding.UTF8.GetString(buffer.WrittenSpan.ToArray());
 }

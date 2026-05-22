@@ -74,7 +74,7 @@ public class EquivalenceTests
         writer.WriteEndElement();
         writer.WriteEndElement();
 
-        var actual = XDocument.Parse(Encoding.UTF8.GetString(buffer.WrittenSpan), LoadOptions.PreserveWhitespace).Root!;
+        var actual = XDocument.Parse(Encoding.UTF8.GetString(buffer.WrittenSpan.ToArray()), LoadOptions.PreserveWhitespace).Root!;
         var expectedRoot = expected.Root!;
 
         Assert.Equal(expectedRoot.Name.LocalName, actual.Name.LocalName);
@@ -115,7 +115,8 @@ internal sealed record XmlSnapshot(
 {
     public static XmlSnapshot From(XmlElement root)
     {
-        var elements = root.Descendants().Prepend(root).ToList();
+        var elements = new List<XmlElement> { root };
+        elements.AddRange(root.Descendants());
         var attributes = new Dictionary<string, string>();
         foreach (var element in elements)
         {

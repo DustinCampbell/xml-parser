@@ -18,7 +18,7 @@ public class XmlEncodedTextTests
     {
         var encoded = XmlEncodedText.Encode("<tag attr=\"value\">π & café</tag>");
 
-        Assert.Equal("&lt;tag attr=&quot;value&quot;&gt;π &amp; café&lt;/tag&gt;", Encoding.UTF8.GetString(encoded.EncodedUtf8Bytes));
+        Assert.Equal("&lt;tag attr=&quot;value&quot;&gt;π &amp; café&lt;/tag&gt;", Encoding.UTF8.GetString(encoded.EncodedUtf8Bytes.ToArray()));
         Assert.Equal("<tag attr=\"value\">π & café</tag>", encoded.ToString());
     }
 
