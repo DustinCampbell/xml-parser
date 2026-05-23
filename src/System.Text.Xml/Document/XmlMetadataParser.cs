@@ -13,23 +13,28 @@ internal static class XmlMetadataParser
         public int ChildCount;    // Running count of direct children
     }
 
-    public static XmlDocument Parse(byte[] sourceBytes)
+    public static XmlDocument Parse(byte[] sourceBytes, bool preserveTrivia = false)
     {
         var reader = new Utf8XmlReader(
             sourceBytes,
             new XmlReaderOptions
             {
                 CommentHandling = XmlCommentHandling.Allow,
-                IgnoreWhitespace = true,
+                IgnoreWhitespace = !preserveTrivia,
             });
 
         try
         {
             var db = new MetadataDb(Math.Max(64, sourceBytes.Length / 20)); // rough estimate: 1 node per 20 bytes
+            TriviaDb? triviaDb = preserveTrivia ? new TriviaDb(64, 32) : null;
             var frameStack = new ElementFrame[16];
             int frameCount = 0;
             int rootIndex = -1;
             int declarationIndex = -1;
+
+            // Trivia collection state: accumulate pending trivia entries
+            // and assign them as leading trivia to the next structural node.
+            var pendingTrivia = preserveTrivia ? new PendingTriviaList() : null;
 
             while (reader.Read())
             {
@@ -44,6 +49,7 @@ internal static class XmlMetadataParser
                         row.ValueStart = GetSpanStart(sourceBytes, reader.ValueSpan);
                         row.ValueLength = reader.ValueSpan.Length;
                         declarationIndex = db.Append(row);
+                        FlushPendingAsLeading(triviaDb, pendingTrivia, declarationIndex);
                         break;
                     }
 
@@ -74,6 +80,8 @@ internal static class XmlMetadataParser
                         {
                             rootIndex = elementIndex;
                         }
+
+                        FlushPendingAsLeading(triviaDb, pendingTrivia, elementIndex);
 
                         // Parse attributes directly into the db
                         int attrCount = 0;
@@ -128,6 +136,9 @@ internal static class XmlMetadataParser
                             elemRow.EndIndex = db.Count;
                             elemRow.ChildCount = frame.ChildCount;
 
+                            // Flush any pending trivia as trailing on the closing element
+                            FlushPendingAsTrailing(triviaDb, pendingTrivia, frame.DbIndex);
+
                             // Increment parent's child count
                             if (frameCount > 0)
                             {
@@ -137,38 +148,76 @@ internal static class XmlMetadataParser
                         break;
                     }
 
+                    case XmlTokenType.Whitespace:
+                    {
+                        // Only emitted when preserveTrivia is true (IgnoreWhitespace = false)
+                        if (preserveTrivia)
+                        {
+                            int start = GetSpanStart(sourceBytes, reader.ValueSpan);
+                            pendingTrivia!.Add(new TriviaEntry { Kind = XmlTriviaKind.Whitespace, Start = start, Length = reader.ValueSpan.Length });
+                        }
+                        break;
+                    }
+
                     case XmlTokenType.Text:
                     {
                         int valueStart = GetSpanStart(sourceBytes, reader.ValueSpan);
-                        db.Append(DbRow.CreateText(valueStart, reader.ValueSpan.Length));
+                        int textIndex = db.Append(DbRow.CreateText(valueStart, reader.ValueSpan.Length));
                         if (frameCount > 0) frameStack[frameCount - 1].ChildCount++;
+                        FlushPendingAsLeading(triviaDb, pendingTrivia, textIndex);
                         break;
                     }
 
                     case XmlTokenType.CData:
                     {
                         int valueStart = GetSpanStart(sourceBytes, reader.ValueSpan);
-                        db.Append(DbRow.CreateCData(valueStart, reader.ValueSpan.Length));
+                        int cdataIndex = db.Append(DbRow.CreateCData(valueStart, reader.ValueSpan.Length));
                         if (frameCount > 0) frameStack[frameCount - 1].ChildCount++;
+                        FlushPendingAsLeading(triviaDb, pendingTrivia, cdataIndex);
                         break;
                     }
 
                     case XmlTokenType.Comment:
                     {
-                        int valueStart = GetSpanStart(sourceBytes, reader.ValueSpan);
-                        db.Append(DbRow.CreateComment(valueStart, reader.ValueSpan.Length));
-                        if (frameCount > 0) frameStack[frameCount - 1].ChildCount++;
+                        if (preserveTrivia)
+                        {
+                            // In trivia mode, comments become trivia attached to next structural node
+                            int start = GetSpanStart(sourceBytes, reader.ValueSpan);
+                            pendingTrivia!.Add(new TriviaEntry { Kind = XmlTriviaKind.Comment, Start = start, Length = reader.ValueSpan.Length });
+                        }
+                        else
+                        {
+                            // In normal mode, comments are structural child nodes
+                            int valueStart = GetSpanStart(sourceBytes, reader.ValueSpan);
+                            db.Append(DbRow.CreateComment(valueStart, reader.ValueSpan.Length));
+                            if (frameCount > 0) frameStack[frameCount - 1].ChildCount++;
+                        }
                         break;
                     }
 
                     case XmlTokenType.ProcessingInstruction:
                     {
-                        int nameStart = GetSpanStart(sourceBytes, reader.LocalNameSpan);
-                        int valueStart = reader.ValueSpan.IsEmpty ? 0 : GetSpanStart(sourceBytes, reader.ValueSpan);
-                        db.Append(DbRow.CreateProcessingInstruction(
-                            nameStart, (ushort)reader.LocalNameSpan.Length,
-                            valueStart, reader.ValueSpan.Length));
-                        if (frameCount > 0) frameStack[frameCount - 1].ChildCount++;
+                        if (preserveTrivia)
+                        {
+                            // In trivia mode, PIs become trivia
+                            int start = GetSpanStart(sourceBytes, reader.ValueSpan);
+                            int nameStart = GetSpanStart(sourceBytes, reader.LocalNameSpan);
+                            // Store the whole PI (name + value) span — approximate using name start to value end
+                            int piStart = nameStart;
+                            int piLength = reader.ValueSpan.IsEmpty
+                                ? reader.LocalNameSpan.Length
+                                : (start + reader.ValueSpan.Length) - nameStart;
+                            pendingTrivia!.Add(new TriviaEntry { Kind = XmlTriviaKind.ProcessingInstruction, Start = piStart, Length = piLength });
+                        }
+                        else
+                        {
+                            int nameStart = GetSpanStart(sourceBytes, reader.LocalNameSpan);
+                            int valueStart = reader.ValueSpan.IsEmpty ? 0 : GetSpanStart(sourceBytes, reader.ValueSpan);
+                            db.Append(DbRow.CreateProcessingInstruction(
+                                nameStart, (ushort)reader.LocalNameSpan.Length,
+                                valueStart, reader.ValueSpan.Length));
+                            if (frameCount > 0) frameStack[frameCount - 1].ChildCount++;
+                        }
                         break;
                     }
                 }
@@ -180,12 +229,41 @@ internal static class XmlMetadataParser
             }
 
             var compactDb = db.Compact();
-            return new XmlDocument(sourceBytes, compactDb, rootIndex, declarationIndex);
+            var compactTrivia = triviaDb?.Compact();
+            return new XmlDocument(sourceBytes, compactDb, rootIndex, declarationIndex, compactTrivia);
         }
         finally
         {
             reader.Dispose();
         }
+    }
+
+    /// <summary>
+    /// Flushes any accumulated pending trivia as leading trivia for the given node.
+    /// </summary>
+    private static void FlushPendingAsLeading(TriviaDb? triviaDb, PendingTriviaList? pending, int nodeIndex)
+    {
+        if (triviaDb is null || pending is null || pending.Count == 0) return;
+        triviaDb.BeginLeadingTrivia(nodeIndex);
+        for (int i = 0; i < pending.Count; i++)
+        {
+            triviaDb.AppendLeading(nodeIndex, pending[i]);
+        }
+        pending.Clear();
+    }
+
+    /// <summary>
+    /// Flushes any accumulated pending trivia as trailing trivia for the given node.
+    /// </summary>
+    private static void FlushPendingAsTrailing(TriviaDb? triviaDb, PendingTriviaList? pending, int nodeIndex)
+    {
+        if (triviaDb is null || pending is null || pending.Count == 0) return;
+        triviaDb.BeginTrailingTrivia(nodeIndex);
+        for (int i = 0; i < pending.Count; i++)
+        {
+            triviaDb.AppendTrailing(nodeIndex, pending[i]);
+        }
+        pending.Clear();
     }
 
     /// <summary>
@@ -203,5 +281,28 @@ internal static class XmlMetadataParser
         if (offset < 0 || offset + span.Length > source.Length)
             return -1;
         return offset;
+    }
+
+    /// <summary>
+    /// Simple list for accumulating trivia entries during parsing.
+    /// </summary>
+    private sealed class PendingTriviaList
+    {
+        private TriviaEntry[] _items = new TriviaEntry[4];
+        private int _count;
+
+        public int Count => _count;
+        public TriviaEntry this[int index] => _items[index];
+
+        public void Add(TriviaEntry entry)
+        {
+            if (_count == _items.Length)
+            {
+                Array.Resize(ref _items, _items.Length * 2);
+            }
+            _items[_count++] = entry;
+        }
+
+        public void Clear() => _count = 0;
     }
 }

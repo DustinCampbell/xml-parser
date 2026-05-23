@@ -26,18 +26,25 @@ public sealed class XmlDocument : IDisposable
 
     private readonly byte[] _utf8Source;
     private readonly MetadataDb _db;
+    private readonly TriviaDb? _triviaDb;
     private readonly int _rootIndex;
     private readonly int _declarationIndex; // -1 if no declaration
     private Utf8StringCache? _nameCache; // lazily created for name deduplication
     private bool _disposed;
 
-    internal XmlDocument(byte[] utf8Source, MetadataDb db, int rootIndex, int declarationIndex)
+    internal XmlDocument(byte[] utf8Source, MetadataDb db, int rootIndex, int declarationIndex, TriviaDb? triviaDb = null)
     {
         _utf8Source = utf8Source;
         _db = db;
         _rootIndex = rootIndex;
         _declarationIndex = declarationIndex;
+        _triviaDb = triviaDb;
     }
+
+    /// <summary>
+    /// Gets whether this document preserves trivia (whitespace and comments).
+    /// </summary>
+    public bool HasTrivia => _triviaDb is not null;
 
     /// <summary>
     /// Gets the root element of the document.
@@ -72,7 +79,18 @@ public sealed class XmlDocument : IDisposable
     {
         ThrowHelper.ThrowIfNull(xml);
         byte[] utf8Bytes = Encoding.UTF8.GetBytes(xml);
-        return XmlMetadataParser.Parse(utf8Bytes);
+        return XmlMetadataParser.Parse(utf8Bytes, preserveTrivia: false);
+    }
+
+    /// <summary>
+    /// Parses an XML document from a UTF-16 string with options.
+    /// </summary>
+    public static XmlDocument Parse(string xml, XmlDocumentOptions options)
+    {
+        ThrowHelper.ThrowIfNull(xml);
+        ThrowHelper.ThrowIfNull(options);
+        byte[] utf8Bytes = Encoding.UTF8.GetBytes(xml);
+        return XmlMetadataParser.Parse(utf8Bytes, preserveTrivia: options.PreserveTrivia);
     }
 
     /// <summary>
@@ -81,7 +99,17 @@ public sealed class XmlDocument : IDisposable
     public static XmlDocument Parse(byte[] utf8Xml)
     {
         ThrowHelper.ThrowIfNull(utf8Xml);
-        return XmlMetadataParser.Parse(utf8Xml);
+        return XmlMetadataParser.Parse(utf8Xml, preserveTrivia: false);
+    }
+
+    /// <summary>
+    /// Parses an XML document from a UTF-8 byte array with options.
+    /// </summary>
+    public static XmlDocument Parse(byte[] utf8Xml, XmlDocumentOptions options)
+    {
+        ThrowHelper.ThrowIfNull(utf8Xml);
+        ThrowHelper.ThrowIfNull(options);
+        return XmlMetadataParser.Parse(utf8Xml, preserveTrivia: options.PreserveTrivia);
     }
 
     /// <summary>
@@ -89,7 +117,7 @@ public sealed class XmlDocument : IDisposable
     /// </summary>
     public static XmlDocument Parse(ReadOnlySpan<byte> utf8Xml)
     {
-        return XmlMetadataParser.Parse(utf8Xml.ToArray());
+        return XmlMetadataParser.Parse(utf8Xml.ToArray(), preserveTrivia: false);
     }
 
     /// <summary>
@@ -250,6 +278,47 @@ public sealed class XmlDocument : IDisposable
     internal bool NamespaceEquals(int start, int length, string value)
     {
         return NameEquals(start, length, value);
+    }
+
+    /// <summary>
+    /// Gets a span of the raw UTF-8 source bytes at the given offset/length.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal ReadOnlySpan<byte> GetSourceSpan(int start, int length)
+    {
+        return _utf8Source.AsSpan(start, length);
+    }
+
+    /// <summary>
+    /// Gets the trivia entry at the specified index in the trivia database.
+    /// </summary>
+    internal XmlTrivia GetTrivia(int index)
+    {
+        if (_triviaDb is null) throw new InvalidOperationException("Document was not parsed with PreserveTrivia.");
+        ref readonly TriviaEntry entry = ref _triviaDb.GetEntry(index);
+        return new XmlTrivia(this, entry.Kind, entry.Start, entry.Length);
+    }
+
+    /// <summary>
+    /// Gets the leading trivia list for the node at the given index.
+    /// </summary>
+    internal XmlTriviaList GetLeadingTriviaForNode(int nodeIndex)
+    {
+        if (_triviaDb is null) return default;
+        _triviaDb.GetLeadingTrivia(nodeIndex, out int start, out int count);
+        if (count == 0) return default;
+        return new XmlTriviaList(this, start, count);
+    }
+
+    /// <summary>
+    /// Gets the trailing trivia list for the node at the given index.
+    /// </summary>
+    internal XmlTriviaList GetTrailingTriviaForNode(int nodeIndex)
+    {
+        if (_triviaDb is null) return default;
+        _triviaDb.GetTrailingTrivia(nodeIndex, out int start, out int count);
+        if (count == 0) return default;
+        return new XmlTriviaList(this, start, count);
     }
 
     // --- Private helpers ---

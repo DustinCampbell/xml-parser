@@ -147,6 +147,26 @@ public readonly struct XmlElement
     }
 
     /// <summary>
+    /// Gets the leading trivia (whitespace, comments) that appear before this element in the source.
+    /// </summary>
+    /// <remarks>
+    /// This method only returns trivia when the document was parsed with
+    /// <see cref="XmlDocumentOptions.PreserveTrivia"/> set to <c>true</c>.
+    /// Otherwise, it returns an empty list.
+    /// </remarks>
+    public XmlTriviaList GetLeadingTrivia() => _document.GetLeadingTriviaForNode(_index);
+
+    /// <summary>
+    /// Gets the trailing trivia (whitespace, comments) that appear after this element in the source.
+    /// </summary>
+    /// <remarks>
+    /// This method only returns trivia when the document was parsed with
+    /// <see cref="XmlDocumentOptions.PreserveTrivia"/> set to <c>true</c>.
+    /// Otherwise, it returns an empty list.
+    /// </remarks>
+    public XmlTriviaList GetTrailingTrivia() => _document.GetTrailingTriviaForNode(_index);
+
+    /// <summary>
     /// Returns the first attribute with the specified local name.
     /// </summary>
     public XmlAttribute? GetAttribute(string localName, string? ns = null)
