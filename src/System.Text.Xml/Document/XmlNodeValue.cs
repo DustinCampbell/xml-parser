@@ -43,6 +43,20 @@ public readonly struct XmlNodeValue
     }
 
     /// <summary>
+    /// Gets the target name for processing instruction nodes.
+    /// Returns empty string for non-PI nodes.
+    /// </summary>
+    public string Target
+    {
+        get
+        {
+            ref readonly DbRow row = ref _document.GetRow(_index);
+            if (row.NodeType != XmlNodeType.ProcessingInstruction) return string.Empty;
+            return _document.GetName(row.NameStart, row.NameLength);
+        }
+    }
+
+    /// <summary>
     /// Gets this node as an <see cref="XmlElement"/>. Only valid when <see cref="NodeType"/> is <see cref="XmlNodeType.Element"/>.
     /// </summary>
     public XmlElement AsElement()

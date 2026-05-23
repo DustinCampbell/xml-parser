@@ -19,6 +19,9 @@ namespace System.Text.Xml;
 /// </remarks>
 public abstract class XmlNode
 {
+    private List<XmlNodeTrivia>? _leadingTrivia;
+    private List<XmlNodeTrivia>? _trailingTrivia;
+
     /// <summary>
     /// Initializes a new <see cref="XmlNode"/> instance.
     /// </summary>
@@ -40,6 +43,54 @@ public abstract class XmlNode
     /// Returns <see langword="null"/> when the node is not attached to an element.
     /// </remarks>
     public XmlElementNode? Parent { get; private set; }
+
+    /// <summary>
+    /// Gets the leading trivia (whitespace, comments) associated with this node.
+    /// </summary>
+    /// <remarks>
+    /// Leading trivia appears before the node in the source text.
+    /// This follows the Roslyn trivia model for high-fidelity round-tripping.
+    /// </remarks>
+    public IReadOnlyList<XmlNodeTrivia> LeadingTrivia =>
+        (IReadOnlyList<XmlNodeTrivia>?)_leadingTrivia ?? Array.Empty<XmlNodeTrivia>();
+
+    /// <summary>
+    /// Gets the trailing trivia (whitespace, comments) associated with this node.
+    /// </summary>
+    /// <remarks>
+    /// Trailing trivia appears after the node in the source text.
+    /// This follows the Roslyn trivia model for high-fidelity round-tripping.
+    /// </remarks>
+    public IReadOnlyList<XmlNodeTrivia> TrailingTrivia =>
+        (IReadOnlyList<XmlNodeTrivia>?)_trailingTrivia ?? Array.Empty<XmlNodeTrivia>();
+
+    /// <summary>
+    /// Adds a leading trivia item to this node.
+    /// </summary>
+    public void AddLeadingTrivia(XmlNodeTrivia trivia)
+    {
+        _leadingTrivia ??= new List<XmlNodeTrivia>();
+        _leadingTrivia.Add(trivia);
+    }
+
+    /// <summary>
+    /// Adds a trailing trivia item to this node.
+    /// </summary>
+    public void AddTrailingTrivia(XmlNodeTrivia trivia)
+    {
+        _trailingTrivia ??= new List<XmlNodeTrivia>();
+        _trailingTrivia.Add(trivia);
+    }
+
+    /// <summary>
+    /// Clears all leading trivia from this node.
+    /// </summary>
+    public void ClearLeadingTrivia() => _leadingTrivia?.Clear();
+
+    /// <summary>
+    /// Clears all trailing trivia from this node.
+    /// </summary>
+    public void ClearTrailingTrivia() => _trailingTrivia?.Clear();
 
     internal void SetParent(XmlElementNode? parent) => Parent = parent;
 

@@ -1,0 +1,166 @@
+using System.Linq;
+using Xunit;
+
+namespace System.Text.Xml.Tests;
+
+public class XmlDomConverterTests
+{
+    [Fact]
+    public void ToMutable_ConvertsSimpleElement()
+    {
+        using var doc = XmlDocument.Parse("<root><child>text</child></root>");
+        var mutable = doc.Root.ToMutable();
+
+        Assert.Equal("root", mutable.LocalName);
+        Assert.Single(mutable.Children);
+        Assert.IsType<XmlElementNode>(mutable.Children[0]);
+
+        var child = (XmlElementNode)mutable.Children[0];
+        Assert.Equal("child", child.LocalName);
+        Assert.Equal("text", child.InnerText);
+    }
+
+    [Fact]
+    public void ToMutable_ConvertsAttributes()
+    {
+        using var doc = XmlDocument.Parse("<root id=\"123\" class=\"main\"/>");
+        var mutable = doc.Root.ToMutable();
+
+        Assert.Equal(2, mutable.Attributes.Count);
+        Assert.Equal("id", mutable.Attributes[0].LocalName);
+        Assert.Equal("123", mutable.Attributes[0].Value);
+        Assert.Equal("class", mutable.Attributes[1].LocalName);
+        Assert.Equal("main", mutable.Attributes[1].Value);
+    }
+
+    [Fact]
+    public void ToMutable_ConvertsNamespaces()
+    {
+        using var doc = XmlDocument.Parse("<ns:root xmlns:ns=\"http://example.com\"><ns:child/></ns:root>");
+        var mutable = doc.Root.ToMutable();
+
+        Assert.Equal("root", mutable.LocalName);
+        Assert.Equal("ns", mutable.Prefix);
+        Assert.Equal("http://example.com", mutable.NamespaceUri);
+    }
+
+    [Fact]
+    public void ToMutable_ConvertsCData()
+    {
+        using var doc = XmlDocument.Parse("<root><![CDATA[some <data>]]></root>");
+        var mutable = doc.Root.ToMutable();
+
+        Assert.Single(mutable.Children);
+        var cdata = Assert.IsType<XmlCDataNode>(mutable.Children[0]);
+        Assert.Equal("some <data>", cdata.Value);
+    }
+
+    [Fact]
+    public void ToMutable_ConvertsComments()
+    {
+        using var doc = XmlDocument.Parse("<root><!-- hello --><child/></root>");
+        var mutable = doc.Root.ToMutable();
+
+        Assert.Equal(2, mutable.Children.Count);
+        var comment = Assert.IsType<XmlCommentNode>(mutable.Children[0]);
+        Assert.Equal(" hello ", comment.Value);
+    }
+
+    [Fact]
+    public void ToMutable_PreservesTrivia()
+    {
+        var options = new XmlDocumentOptions { PreserveTrivia = true };
+        using var doc = XmlDocument.Parse("<root>\n  <child/>\n</root>", options);
+
+        var mutable = doc.Root.ToMutable();
+        var children = mutable.Elements().ToList();
+        Assert.Single(children);
+
+        var child = children[0];
+        Assert.NotEmpty(child.LeadingTrivia);
+        Assert.Equal(XmlTriviaKind.Whitespace, child.LeadingTrivia[0].Kind);
+        Assert.Equal("\n  ", child.LeadingTrivia[0].Text);
+    }
+
+    [Fact]
+    public void ToMutable_ThenModify_ThenSerialize()
+    {
+        using var doc = XmlDocument.Parse("<root><item>one</item></root>");
+        var mutable = doc.Root.ToMutable();
+
+        // Add a new child
+        var newItem = new XmlElementNode(XmlNameAccessor.Create("item"));
+        newItem.AddChild(new XmlTextNode("two"));
+        mutable.AddChild(newItem);
+
+        var xml = mutable.ToString();
+        Assert.Contains("<item>one</item>", xml);
+        Assert.Contains("<item>two</item>", xml);
+    }
+
+    [Fact]
+    public void ToMutable_ThenRemoveChild_ThenSerialize()
+    {
+        using var doc = XmlDocument.Parse("<root><a/><b/><c/></root>");
+        var mutable = doc.Root.ToMutable();
+
+        var b = mutable.Elements("b").First();
+        mutable.RemoveChild(b);
+
+        var xml = mutable.ToString();
+        Assert.Contains("<a", xml);
+        Assert.Contains("<c", xml);
+        Assert.DoesNotContain("<b", xml);
+    }
+
+    [Fact]
+    public void ToReadOnly_RoundTrips()
+    {
+        using var doc = XmlDocument.Parse("<root><child attr=\"val\">text</child></root>");
+        var mutable = doc.Root.ToMutable();
+
+        // Modify
+        mutable.SetAttribute(new XmlAttributeNode("added", null, null, "true"));
+
+        // Convert back to read-only
+        using var readOnly = mutable.ToReadOnly();
+        Assert.Equal("root", readOnly.Root.LocalName);
+
+        var attr = readOnly.Root.GetAttribute("added");
+        Assert.NotNull(attr);
+        Assert.Equal("true", attr.Value.Value);
+    }
+
+    [Fact]
+    public void ToMutable_WithTrivia_CanAddTriviaManually()
+    {
+        using var doc = XmlDocument.Parse("<root><child/></root>");
+        var mutable = doc.Root.ToMutable();
+
+        // Add whitespace trivia to the child
+        var child = mutable.Elements().First();
+        child.AddLeadingTrivia(XmlNodeTrivia.Whitespace("\n  "));
+        child.AddTrailingTrivia(XmlNodeTrivia.Whitespace("\n"));
+
+        Assert.Single(child.LeadingTrivia);
+        Assert.Equal("\n  ", child.LeadingTrivia[0].Text);
+        Assert.Single(child.TrailingTrivia);
+        Assert.Equal("\n", child.TrailingTrivia[0].Text);
+    }
+
+    [Fact]
+    public void ToMutable_DeepTree()
+    {
+        using var doc = XmlDocument.Parse("<a><b><c><d>deep</d></c></b></a>");
+        var mutable = doc.Root.ToMutable();
+
+        Assert.Equal("a", mutable.LocalName);
+        var b = (XmlElementNode)mutable.Children[0];
+        Assert.Equal("b", b.LocalName);
+        var c = (XmlElementNode)b.Children[0];
+        Assert.Equal("c", c.LocalName);
+        var d = (XmlElementNode)c.Children[0];
+        Assert.Equal("d", d.LocalName);
+        Assert.Equal("deep", d.InnerText);
+    }
+}
