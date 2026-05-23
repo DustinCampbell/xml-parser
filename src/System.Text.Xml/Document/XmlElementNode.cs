@@ -78,6 +78,75 @@ public sealed class XmlElementNode : XmlNode
     }
 
     /// <summary>
+    /// Creates a mutable <see cref="XmlElementNode"/> from a read-only <see cref="XmlElement"/>.
+    /// </summary>
+    /// <param name="element">The read-only element to convert.</param>
+    /// <returns>A new mutable element tree with the same structure and trivia.</returns>
+    /// <remarks>
+    /// <para>
+    /// This is analogous to <c>JsonObject.Create(JsonElement)</c> in System.Text.Json.
+    /// It performs a deep copy, converting the entire element subtree including attributes,
+    /// child nodes, and trivia (when the source document was parsed with
+    /// <see cref="XmlDocumentOptions.PreserveTrivia"/>).
+    /// </para>
+    /// </remarks>
+    public static XmlElementNode Create(XmlElement element)
+    {
+        var elementNode = new XmlElementNode(
+            element.LocalName,
+            XmlDomConverter.NullIfEmpty(element.Prefix),
+            XmlDomConverter.NullIfEmpty(element.NamespaceUri));
+
+        // Convert attributes
+        var attrs = element.EnumerateAttributes();
+        while (attrs.MoveNext())
+        {
+            var attr = attrs.Current;
+            elementNode.SetAttribute(new XmlAttributeNode(
+                attr.LocalName,
+                XmlDomConverter.NullIfEmpty(attr.Prefix),
+                XmlDomConverter.NullIfEmpty(attr.NamespaceUri),
+                attr.Value));
+        }
+
+        // Convert children
+        var children = element.EnumerateChildren();
+        while (children.MoveNext())
+        {
+            var childNode = XmlDomConverter.ConvertChild(children.Current);
+            if (childNode is not null)
+            {
+                elementNode.AddChild(childNode);
+            }
+        }
+
+        // Copy trivia if available
+        XmlDomConverter.CopyTrivia(element, elementNode);
+
+        return elementNode;
+    }
+
+    /// <summary>
+    /// Converts this mutable element to a read-only <see cref="XmlDocument"/>.
+    /// </summary>
+    /// <param name="options">Optional document options for the resulting document.</param>
+    /// <returns>A new read-only document with this element as the root.</returns>
+    /// <remarks>
+    /// <para>
+    /// This serializes the mutable DOM to XML and re-parses it into the efficient
+    /// read-only representation. Use this when you are done modifying and want to
+    /// return to the high-performance struct-based DOM.
+    /// </para>
+    /// </remarks>
+    public XmlDocument ToDocument(XmlDocumentOptions? options = null)
+    {
+        string xml = ToString();
+        return options is not null
+            ? XmlDocument.Parse(xml, options)
+            : XmlDocument.Parse(xml);
+    }
+
+    /// <summary>
     /// Sets the children array directly from the parser (exact-sized, no copies).
     /// </summary>
     internal void SetChildrenInternal(XmlNode[] children, int count)

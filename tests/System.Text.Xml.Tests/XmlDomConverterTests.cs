@@ -6,10 +6,10 @@ namespace System.Text.Xml.Tests;
 public class XmlDomConverterTests
 {
     [Fact]
-    public void ToMutable_ConvertsSimpleElement()
+    public void Create_ConvertsSimpleElement()
     {
         using var doc = XmlDocument.Parse("<root><child>text</child></root>");
-        var mutable = doc.Root.ToMutable();
+        var mutable = XmlElementNode.Create(doc.Root);
 
         Assert.Equal("root", mutable.LocalName);
         Assert.Single(mutable.Children);
@@ -21,10 +21,10 @@ public class XmlDomConverterTests
     }
 
     [Fact]
-    public void ToMutable_ConvertsAttributes()
+    public void Create_ConvertsAttributes()
     {
         using var doc = XmlDocument.Parse("<root id=\"123\" class=\"main\"/>");
-        var mutable = doc.Root.ToMutable();
+        var mutable = XmlElementNode.Create(doc.Root);
 
         Assert.Equal(2, mutable.Attributes.Count);
         Assert.Equal("id", mutable.Attributes[0].LocalName);
@@ -34,10 +34,10 @@ public class XmlDomConverterTests
     }
 
     [Fact]
-    public void ToMutable_ConvertsNamespaces()
+    public void Create_ConvertsNamespaces()
     {
         using var doc = XmlDocument.Parse("<ns:root xmlns:ns=\"http://example.com\"><ns:child/></ns:root>");
-        var mutable = doc.Root.ToMutable();
+        var mutable = XmlElementNode.Create(doc.Root);
 
         Assert.Equal("root", mutable.LocalName);
         Assert.Equal("ns", mutable.Prefix);
@@ -45,10 +45,10 @@ public class XmlDomConverterTests
     }
 
     [Fact]
-    public void ToMutable_ConvertsCData()
+    public void Create_ConvertsCData()
     {
         using var doc = XmlDocument.Parse("<root><![CDATA[some <data>]]></root>");
-        var mutable = doc.Root.ToMutable();
+        var mutable = XmlElementNode.Create(doc.Root);
 
         Assert.Single(mutable.Children);
         var cdata = Assert.IsType<XmlCDataNode>(mutable.Children[0]);
@@ -56,10 +56,10 @@ public class XmlDomConverterTests
     }
 
     [Fact]
-    public void ToMutable_ConvertsComments()
+    public void Create_ConvertsComments()
     {
         using var doc = XmlDocument.Parse("<root><!-- hello --><child/></root>");
-        var mutable = doc.Root.ToMutable();
+        var mutable = XmlElementNode.Create(doc.Root);
 
         Assert.Equal(2, mutable.Children.Count);
         var comment = Assert.IsType<XmlCommentNode>(mutable.Children[0]);
@@ -67,12 +67,12 @@ public class XmlDomConverterTests
     }
 
     [Fact]
-    public void ToMutable_PreservesTrivia()
+    public void Create_PreservesTrivia()
     {
         var options = new XmlDocumentOptions { PreserveTrivia = true };
         using var doc = XmlDocument.Parse("<root>\n  <child/>\n</root>", options);
 
-        var mutable = doc.Root.ToMutable();
+        var mutable = XmlElementNode.Create(doc.Root);
         var children = mutable.Elements().ToList();
         Assert.Single(children);
 
@@ -83,10 +83,10 @@ public class XmlDomConverterTests
     }
 
     [Fact]
-    public void ToMutable_ThenModify_ThenSerialize()
+    public void Create_ThenModify_ThenSerialize()
     {
         using var doc = XmlDocument.Parse("<root><item>one</item></root>");
-        var mutable = doc.Root.ToMutable();
+        var mutable = XmlElementNode.Create(doc.Root);
 
         // Add a new child
         var newItem = new XmlElementNode(XmlNameAccessor.Create("item"));
@@ -99,10 +99,10 @@ public class XmlDomConverterTests
     }
 
     [Fact]
-    public void ToMutable_ThenRemoveChild_ThenSerialize()
+    public void Create_ThenRemoveChild_ThenSerialize()
     {
         using var doc = XmlDocument.Parse("<root><a/><b/><c/></root>");
-        var mutable = doc.Root.ToMutable();
+        var mutable = XmlElementNode.Create(doc.Root);
 
         var b = mutable.Elements("b").First();
         mutable.RemoveChild(b);
@@ -114,16 +114,16 @@ public class XmlDomConverterTests
     }
 
     [Fact]
-    public void ToReadOnly_RoundTrips()
+    public void ToDocument_RoundTrips()
     {
         using var doc = XmlDocument.Parse("<root><child attr=\"val\">text</child></root>");
-        var mutable = doc.Root.ToMutable();
+        var mutable = XmlElementNode.Create(doc.Root);
 
         // Modify
         mutable.SetAttribute(new XmlAttributeNode("added", null, null, "true"));
 
         // Convert back to read-only
-        using var readOnly = mutable.ToReadOnly();
+        using var readOnly = mutable.ToDocument();
         Assert.Equal("root", readOnly.Root.LocalName);
 
         var attr = readOnly.Root.GetAttribute("added");
@@ -132,10 +132,10 @@ public class XmlDomConverterTests
     }
 
     [Fact]
-    public void ToMutable_WithTrivia_CanAddTriviaManually()
+    public void Create_WithTrivia_CanAddTriviaManually()
     {
         using var doc = XmlDocument.Parse("<root><child/></root>");
-        var mutable = doc.Root.ToMutable();
+        var mutable = XmlElementNode.Create(doc.Root);
 
         // Add whitespace trivia to the child
         var child = mutable.Elements().First();
@@ -149,10 +149,10 @@ public class XmlDomConverterTests
     }
 
     [Fact]
-    public void ToMutable_DeepTree()
+    public void Create_DeepTree()
     {
         using var doc = XmlDocument.Parse("<a><b><c><d>deep</d></c></b></a>");
-        var mutable = doc.Root.ToMutable();
+        var mutable = XmlElementNode.Create(doc.Root);
 
         Assert.Equal("a", mutable.LocalName);
         var b = (XmlElementNode)mutable.Children[0];
