@@ -1090,7 +1090,13 @@ public ref struct Utf8XmlReader
 #if NET
         return s_utf8.GetString(value);
 #else
-        return s_utf8.GetString(value.ToArray());
+        unsafe
+        {
+            fixed (byte* ptr = value)
+            {
+                return s_utf8.GetString(ptr, value.Length);
+            }
+        }
 #endif
     }
 

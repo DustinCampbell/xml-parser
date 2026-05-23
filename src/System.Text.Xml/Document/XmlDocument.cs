@@ -236,7 +236,13 @@ public sealed class XmlDocument : IDisposable
 #if NET
         return s_utf8.GetString(_utf8Source.AsSpan(start, length));
 #else
-        return s_utf8.GetString(_utf8Source, start, length);
+        unsafe
+        {
+            fixed (byte* ptr = &_utf8Source[start])
+            {
+                return s_utf8.GetString(ptr, length);
+            }
+        }
 #endif
     }
 

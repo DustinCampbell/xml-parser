@@ -330,8 +330,16 @@ public sealed class Utf8XmlWriter : IDisposable
 #if NET
         await _stream.WriteAsync(_streamBuffer.WrittenMemory).ConfigureAwait(false);
 #else
-        byte[] buffer = _streamBuffer.WrittenSpan.ToArray();
-        await _stream.WriteAsync(buffer, 0, buffer.Length).ConfigureAwait(false);
+        var memory = _streamBuffer.WrittenMemory;
+        if (System.Runtime.InteropServices.MemoryMarshal.TryGetArray(memory, out ArraySegment<byte> segment))
+        {
+            await _stream.WriteAsync(segment.Array!, segment.Offset, segment.Count).ConfigureAwait(false);
+        }
+        else
+        {
+            byte[] buffer = memory.Span.ToArray();
+            await _stream.WriteAsync(buffer, 0, buffer.Length).ConfigureAwait(false);
+        }
 #endif
         _bytesCommitted += _streamBuffer.WrittenCount;
         _streamBuffer.Clear();
@@ -730,11 +738,20 @@ public sealed class Utf8XmlWriter : IDisposable
         Span<byte> span = GetDestinationSpan(byteCount);
         int written = s_utf8.GetBytes(value, span);
 #else
-        byte[] encoded = s_utf8.GetBytes(value.ToString());
-        int byteCount = encoded.Length;
-        Span<byte> span = GetDestinationSpan(byteCount);
-        encoded.AsSpan().CopyTo(span);
-        int written = byteCount;
+        int byteCount;
+        int written;
+        unsafe
+        {
+            fixed (char* charPtr = value)
+            {
+                byteCount = s_utf8.GetByteCount(charPtr, value.Length);
+                Span<byte> span = GetDestinationSpan(byteCount);
+                fixed (byte* bytePtr = span)
+                {
+                    written = s_utf8.GetBytes(charPtr, value.Length, bytePtr, byteCount);
+                }
+            }
+        }
 #endif
         AdvanceOutput(written);
     }
@@ -809,9 +826,14 @@ public sealed class Utf8XmlWriter : IDisposable
 #if NET
         return s_utf8.GetBytes(value, destination);
 #else
-        byte[] encoded = s_utf8.GetBytes(value.ToString());
-        encoded.AsSpan().CopyTo(destination);
-        return encoded.Length;
+        unsafe
+        {
+            fixed (char* charPtr = value)
+            fixed (byte* bytePtr = destination)
+            {
+                return s_utf8.GetBytes(charPtr, value.Length, bytePtr, destination.Length);
+            }
+        }
 #endif
     }
 
@@ -938,8 +960,17 @@ public sealed class Utf8XmlWriter : IDisposable
 #if NET
         _stream.Write(_streamBuffer.WrittenSpan);
 #else
-        byte[] buffer = _streamBuffer.WrittenSpan.ToArray();
-        _stream.Write(buffer, 0, buffer.Length);
+        // Avoid .ToArray() allocation by using MemoryMarshal to get the underlying array
+        var memory = _streamBuffer.WrittenMemory;
+        if (System.Runtime.InteropServices.MemoryMarshal.TryGetArray(memory, out ArraySegment<byte> segment))
+        {
+            _stream.Write(segment.Array!, segment.Offset, segment.Count);
+        }
+        else
+        {
+            byte[] buffer = memory.Span.ToArray();
+            _stream.Write(buffer, 0, buffer.Length);
+        }
 #endif
         _bytesCommitted += _streamBuffer.WrittenCount;
         _streamBuffer.Clear();
