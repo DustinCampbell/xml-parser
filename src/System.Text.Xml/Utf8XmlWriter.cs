@@ -604,13 +604,48 @@ public sealed class Utf8XmlWriter : IDisposable
     {
 #if NET8_0_OR_GREATER
         return value.IndexOfAny(attributeValue ? s_attributeEscapeChars : s_textEscapeChars);
-#else
+#elif NET
         for (int i = 0; i < value.Length; i++)
         {
             char ch = value[i];
             if (ch == '&' || ch == '<' || ch == '>' || (attributeValue && (ch == '"' || ch == '\'')))
             {
                 return i;
+            }
+        }
+
+        return -1;
+#else
+        unsafe
+        {
+            fixed (char* ptr = value)
+            {
+                char* p = ptr;
+                char* pEnd = ptr + value.Length;
+                if (attributeValue)
+                {
+                    while (p < pEnd)
+                    {
+                        char ch = *p;
+                        if (ch == '&' || ch == '<' || ch == '>' || ch == '"' || ch == '\'')
+                        {
+                            return (int)(p - ptr);
+                        }
+                        p++;
+                    }
+                }
+                else
+                {
+                    while (p < pEnd)
+                    {
+                        char ch = *p;
+                        if (ch == '&' || ch == '<' || ch == '>')
+                        {
+                            return (int)(p - ptr);
+                        }
+                        p++;
+                    }
+                }
             }
         }
 
@@ -844,7 +879,7 @@ public sealed class Utf8XmlWriter : IDisposable
         {
             return true;
         }
-#else
+#elif NET
         if (value.Length <= destination.Length)
         {
             for (int i = 0; i < value.Length; i++)
@@ -857,6 +892,36 @@ public sealed class Utf8XmlWriter : IDisposable
                 }
 
                 destination[i] = (byte)ch;
+            }
+
+            written = value.Length;
+            return true;
+        }
+#else
+        if (value.Length <= destination.Length)
+        {
+            unsafe
+            {
+                fixed (char* srcPtr = value)
+                fixed (byte* dstPtr = destination)
+                {
+                    char* src = srcPtr;
+                    char* srcEnd = srcPtr + value.Length;
+                    byte* dst = dstPtr;
+                    while (src < srcEnd)
+                    {
+                        char ch = *src;
+                        if (ch > 0x7F)
+                        {
+                            written = 0;
+                            return false;
+                        }
+
+                        *dst = (byte)ch;
+                        src++;
+                        dst++;
+                    }
+                }
             }
 
             written = value.Length;
